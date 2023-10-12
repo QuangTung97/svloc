@@ -6,13 +6,15 @@ import (
 	"sync"
 )
 
-// Universe ...
+// Universe every universe is different
+// each newFn in a Locator[T] will be called once for each Universe
+// but different Universes can have different values of object created by values
 type Universe struct {
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
 }
 
-// NewUniverse ...
+// NewUniverse creates a new Universe
 func NewUniverse() *Universe {
 	return &Universe{
 		svcMap: map[any]*registeredService{},
@@ -55,7 +57,7 @@ func (s *Locator[T]) Get(unv *Universe) T {
 	return registered.svc.(T)
 }
 
-// Override ...
+// Override prevent running the function inside Register
 func (s *Locator[T]) Override(unv *Universe, svc T) (succeeded bool) {
 	registered := unv.getService(s.key)
 
@@ -67,7 +69,7 @@ func (s *Locator[T]) Override(unv *Universe, svc T) (succeeded bool) {
 	return succeeded
 }
 
-// MustOverride ...
+// MustOverride will fail if Override returns false
 func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
 	var val *T
 	svcType := reflect.TypeOf(val).Elem()
@@ -78,7 +80,7 @@ func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
 	}
 }
 
-// Register ...
+// Register creates a new Locator allow to call Get to create a new object
 func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 	key := new(T)
 	return &Locator[T]{

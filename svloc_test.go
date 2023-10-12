@@ -98,6 +98,21 @@ func TestSimpleServiceLocator(t *testing.T) {
 
 		assert.Equal(t, 1, newUserRepoCalls)
 	})
+
+	t.Run("with different universes", func(t *testing.T) {
+		resetGlobals()
+
+		unv1 := NewUniverse()
+		unv2 := NewUniverse()
+
+		svc := userServiceLoc.Get(unv1)
+		assert.Equal(t, "hello: user_repo", svc.Hello())
+
+		newSvc := userServiceLoc.Get(unv2)
+		assert.NotSame(t, svc, newSvc)
+
+		assert.Equal(t, 2, newUserRepoCalls)
+	})
 }
 
 type RepoMock struct {
