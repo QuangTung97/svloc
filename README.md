@@ -1,0 +1,1 @@
+# Service Locator Library for Dependency Injection in Go
