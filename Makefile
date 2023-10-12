@@ -1,4 +1,9 @@
-.PHONY: test test-race
+.PHONY: lint test test-race
+
+lint:
+	$(foreach f,$(shell go fmt ./...),@echo "Forgot to format file: ${f}"; exit 1;)
+	go vet ./...
+	revive -config revive.toml -formatter friendly ./...
 
 test:
 	go test ./...
