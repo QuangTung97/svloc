@@ -49,7 +49,7 @@ func resetGlobals() {
 	saveCalls = 0
 }
 
-func getInParallel(t *testing.T) {
+func doGetInParallel(t *testing.T) {
 	resetGlobals()
 
 	unv := NewUniverse()
@@ -101,7 +101,7 @@ func TestSimpleServiceLocator(t *testing.T) {
 
 	t.Run("call multiple times in parallel", func(t *testing.T) {
 		for i := 0; i < 10000; i++ {
-			getInParallel(t)
+			doGetInParallel(t)
 		}
 	})
 
@@ -525,7 +525,7 @@ func TestLocator_Register_Complex__Success(t *testing.T) {
 	assert.NotSame(t, initRepoUnv, initSvcUnv)
 }
 
-func getAndOverrideInParallel(t *testing.T) {
+func doGetAndOverrideInParallel(_ *testing.T) {
 	resetGlobals()
 
 	unv := NewUniverse()
@@ -548,6 +548,6 @@ func getAndOverrideInParallel(t *testing.T) {
 
 func TestLocator_Get_And_Override_In_Parallel(t *testing.T) {
 	for i := 0; i < 10_000; i++ {
-		getAndOverrideInParallel(t)
+		doGetAndOverrideInParallel(t)
 	}
 }

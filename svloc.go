@@ -111,7 +111,10 @@ func (u *Universe) printGetCallTrace(problem string, callLoc string) {
 	fmt.Println("==========================================================")
 	fmt.Printf("%s:\n", problem)
 
-	fmt.Println("\t" + callLoc)
+	if callLoc != "" {
+		fmt.Println("\t" + callLoc)
+	}
+
 	for current := u; current != nil; current = current.prev {
 		key := current.currentKey
 		if key == nil {
@@ -190,7 +193,7 @@ func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredServ
 	defer reg.mut.Unlock()
 
 	if reg.onceDone.Load() {
-		reg.createUnv.prev.printGetCallTrace("Get calls stacktrace", reg.getCallLocation)
+		reg.createUnv.printGetCallTrace("Get calls stacktrace", "")
 		return ErrGetAlreadyCalled
 	}
 
@@ -223,6 +226,7 @@ func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
 	}
 }
 
+// MustOverrideFunc similar to OverrideFunc but panics if error returned
 func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T) {
 	err := s.OverrideFunc(unv, newFn)
 	if err != nil {
@@ -293,6 +297,7 @@ func RegisterEmpty[T any]() *Locator[T] {
 	return &Locator[T]{
 		key: key,
 		newFn: func(unv *Universe) any {
+			unv.printGetCallTrace("Get call stacktrace", "")
 			panic(
 				fmt.Sprintf(
 					"Not found registered object of type '%v'",
