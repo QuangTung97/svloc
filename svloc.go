@@ -41,20 +41,19 @@ func NewUniverse() *Universe {
 }
 
 type registeredService struct {
-	key any
+	key             any
+	originalNewFunc func(unv *Universe) any
 
-	// ==========================================
-	onceDone        atomic.Bool // similar to sync.Once, but add a mechanism for detecting deadlock
-	onceMut         sync.Mutex
+	mut sync.Mutex
+
+	onceDone atomic.Bool // similar to sync.Once, but add a mechanism for detecting deadlock
+
 	svc             any
 	getCallLocation string
-	// ==========================================
+	createUnv       *Universe
 
-	// ================================================
-	funcMut  sync.Mutex
 	newFunc  func(unv *Universe) any
-	wrappers []func(svc any) any
-	// ================================================
+	wrappers []func(unv *Universe, svc any) any
 }
 
 func (s *registeredService) newService(unv *Universe, callLoc string) any {
@@ -64,49 +63,80 @@ func (s *registeredService) newService(unv *Universe, callLoc string) any {
 	return s.newServiceSlow(unv, callLoc)
 }
 
+func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
+	newFunc := s.originalNewFunc
+	if s.newFunc != nil {
+		newFunc = s.newFunc
+	}
+
+	newUnv := &Universe{
+		data:       unv.data,
+		currentKey: s.key,
+		prev:       unv,
+	}
+
+	s.svc = newFunc(newUnv)
+	s.createUnv = newUnv
+
+	for _, wrapper := range s.wrappers {
+		s.svc = wrapper(newUnv, s.svc)
+	}
+}
+
 func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
-	for {
-		ok := s.onceMut.TryLock()
-		if ok {
-			break
-		}
-		if unv.detectCircularDependency(s.key) {
+	ok := s.mut.TryLock()
+	if !ok {
+		if unv.detectedCircularDependency(s.key, callLoc) {
 			panic("svloc: circular dependency detected")
 		}
+		s.mut.Lock()
 	}
-	defer s.onceMut.Unlock()
+	defer s.mut.Unlock()
 
 	// double-checked locking
 	if s.onceDone.Load() {
 		return s.svc
 	}
 
-	s.svc = s.newFunc(&Universe{
-		data:       unv.data,
-		currentKey: s.key,
-		prev:       unv,
-	})
-	for _, wrapper := range s.wrappers {
-		s.svc = wrapper(s.svc)
-	}
-
 	s.getCallLocation = callLoc
+
+	s.callNewFuncAndWrappers(unv)
 
 	s.onceDone.Store(true)
 
 	return s.svc
 }
 
-func (u *Universe) detectCircularDependency(newKey any) bool {
-	for currentUnv := u; currentUnv != nil; currentUnv = currentUnv.prev {
-		if currentUnv.currentKey == newKey {
-			return true
+func (u *Universe) printGetCallTrace(problem string, callLoc string) {
+	fmt.Println("==========================================================")
+	fmt.Printf("%s:\n", problem)
+
+	fmt.Println("\t" + callLoc)
+	for current := u; current != nil; current = current.prev {
+		key := current.currentKey
+		if key == nil {
+			break
 		}
+		reg := u.data.getService(key, nil)
+		fmt.Println("\t" + reg.getCallLocation)
+	}
+
+	fmt.Println("==========================================================")
+}
+
+func (u *Universe) detectedCircularDependency(newKey any, callLoc string) bool {
+	for currentUnv := u; currentUnv != nil; currentUnv = currentUnv.prev {
+		if currentUnv.currentKey != newKey {
+			continue
+		}
+
+		u.printGetCallTrace("Get calls stacktrace that causes circular dependency", callLoc)
+		return true
 	}
 	return false
 }
 
-func (u *universeData) getService(key any) *registeredService {
+func (u *universeData) getService(key any, originalNewFunc func(unv *Universe) any) *registeredService {
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
@@ -116,7 +146,8 @@ func (u *universeData) getService(key any) *registeredService {
 	}
 
 	svc = &registeredService{
-		key: key,
+		key:             key,
+		originalNewFunc: originalNewFunc,
 	}
 	u.svcMap[key] = svc
 
@@ -126,20 +157,12 @@ func (u *universeData) getService(key any) *registeredService {
 // Locator ...
 type Locator[T any] struct {
 	key   *T
-	newFn func(unv *Universe) T
+	newFn func(unv *Universe) any
 }
 
 // Get ...
 func (s *Locator[T]) Get(unv *Universe) T {
-	reg := unv.data.getService(s.key)
-
-	reg.funcMut.Lock()
-	if reg.newFunc == nil {
-		reg.newFunc = func(unv *Universe) any {
-			return s.newFn(unv)
-		}
-	}
-	reg.funcMut.Unlock()
+	reg := unv.data.getService(s.key, s.newFn)
 
 	_, file, line, _ := runtime.Caller(1)
 	loc := fmt.Sprintf("%s:%d", file, line)
@@ -156,13 +179,13 @@ func (s *Locator[T]) Override(unv *Universe, svc T) error {
 }
 
 func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredService)) error {
-	reg := unv.data.getService(s.key)
+	reg := unv.data.getService(s.key, s.newFn)
 
-	reg.funcMut.Lock()
-	defer reg.funcMut.Unlock()
+	reg.mut.Lock()
+	defer reg.mut.Unlock()
 
 	if reg.onceDone.Load() {
-		fmt.Printf("[ERROR] Get called location: %s\n", reg.getCallLocation)
+		reg.createUnv.prev.printGetCallTrace("Get calls stacktrace", reg.getCallLocation)
 		return ErrGetAlreadyCalled
 	}
 
@@ -205,7 +228,7 @@ func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T
 // Wrap the original implementation with the object created by wrapper
 func (s *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
 	return s.doBeforeGet(unv, func(reg *registeredService) {
-		reg.wrappers = append(reg.wrappers, func(svc any) any {
+		reg.wrappers = append(reg.wrappers, func(unv *Universe, svc any) any {
 			return wrapper(unv, svc.(T))
 		})
 	})
@@ -233,10 +256,13 @@ func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 	if notAllowRegistering.Load() {
 		panic("Not allow Register being called after PreventRegistering")
 	}
+
 	key := new(T)
 	return &Locator[T]{
-		key:   key,
-		newFn: newFn,
+		key: key,
+		newFn: func(unv *Universe) any {
+			return newFn(unv)
+		},
 	}
 }
 
@@ -259,7 +285,7 @@ func RegisterEmpty[T any]() *Locator[T] {
 
 	return &Locator[T]{
 		key: key,
-		newFn: func(unv *Universe) T {
+		newFn: func(unv *Universe) any {
 			panic(
 				fmt.Sprintf(
 					"Not found registered object of type '%v'",
