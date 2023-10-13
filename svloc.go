@@ -13,7 +13,7 @@ import (
 // but different Universes can have different values of object created by values
 // the order of calls should be:
 //   Register in global => Wrap / Override / MustOverride => Get
-// it will return false or panic (with Must* functions) if not working
+// It will return errors or panic (with Must* functions) if Get happens before any of those functions
 type Universe struct {
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
@@ -189,6 +189,14 @@ func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 		key:   key,
 		newFn: newFn,
 	}
+}
+
+// RegisterSimple creates a new Locator with very simple newFn that returns the zero value
+func RegisterSimple[T any]() *Locator[T] {
+	return Register[T](func(unv *Universe) T {
+		var empty T
+		return empty
+	})
 }
 
 // RegisterEmpty does not init anything when calling Get, and must be Override
