@@ -4,4 +4,4 @@ import (
 	"errors"
 )
 
-var ErrGetAlreadyCalled = errors.New("method Get already called")
+var ErrGetAlreadyCalled = errors.New("svloc: method Get already called")

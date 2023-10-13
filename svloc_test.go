@@ -49,6 +49,28 @@ func resetGlobals() {
 	saveCalls = 0
 }
 
+func getInParallel(t *testing.T) {
+	resetGlobals()
+
+	unv := NewUniverse()
+
+	const numThread = 3
+
+	var wg sync.WaitGroup
+	wg.Add(numThread)
+
+	for i := 0; i < numThread; i++ {
+		go func() {
+			defer wg.Done()
+			userRepoLoc.Get(unv)
+		}()
+	}
+
+	wg.Wait()
+
+	assert.Equal(t, 1, newUserRepoCalls)
+}
+
 func TestSimpleServiceLocator(t *testing.T) {
 	t.Run("normal", func(t *testing.T) {
 		resetGlobals()
@@ -78,25 +100,9 @@ func TestSimpleServiceLocator(t *testing.T) {
 	})
 
 	t.Run("call multiple times in parallel", func(t *testing.T) {
-		resetGlobals()
-
-		unv := NewUniverse()
-
-		const numThread = 3
-
-		var wg sync.WaitGroup
-		wg.Add(numThread)
-
-		for i := 0; i < numThread; i++ {
-			go func() {
-				defer wg.Done()
-				userRepoLoc.Get(unv)
-			}()
+		for i := 0; i < 10000; i++ {
+			getInParallel(t)
 		}
-
-		wg.Wait()
-
-		assert.Equal(t, 1, newUserRepoCalls)
 	})
 
 	t.Run("with different universes", func(t *testing.T) {
@@ -168,7 +174,7 @@ func TestSimpleServiceLocator_With_Must_Override(t *testing.T) {
 		userServiceLoc.Get(unv)
 
 		assert.PanicsWithValue(t,
-			"Can NOT override service of type 'svloc.Repo', err: method Get already called",
+			"Can NOT override service of type 'svloc.Repo', err: svloc: method Get already called",
 			func() {
 				userRepoLoc.MustOverride(unv, &RepoMock{})
 			},
@@ -204,7 +210,7 @@ func TestSimpleServiceLocator_With_Must_Override(t *testing.T) {
 
 		assert.PanicsWithValue(
 			t,
-			"Can NOT override service of type 'svloc.Repo', err: method Get already called",
+			"Can NOT override service of type 'svloc.Repo', err: svloc: method Get already called",
 			func() {
 				userRepoLoc.MustOverrideFunc(unv, func(unv *Universe) Repo {
 					return &RepoMock{}
@@ -313,10 +319,47 @@ func TestLocator_Wrap(t *testing.T) {
 
 		userServiceLoc.Get(unv)
 
-		assert.PanicsWithValue(t, "Failed to Wrap 'svloc.Repo', error: method Get already called", func() {
-			userRepoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
-				return &WrapperRepo{repo: repo, prefix: "wrapper"}
-			})
+		assert.PanicsWithValue(
+			t, "Failed to Wrap 'svloc.Repo', error: svloc: method Get already called",
+			func() {
+				userRepoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
+					return &WrapperRepo{repo: repo, prefix: "wrapper"}
+				})
+			},
+		)
+	})
+}
+
+type serviceA struct {
+	ref *serviceB
+}
+
+type serviceB struct {
+	ref *serviceA
+}
+
+var serviceALoc = RegisterEmpty[*serviceA]()
+
+var serviceBLoc = RegisterEmpty[*serviceB]()
+
+func TestLocator_Detect_Circular_Dependency(t *testing.T) {
+	t.Run("two services", func(t *testing.T) {
+		unv := NewUniverse()
+
+		serviceALoc.MustOverrideFunc(unv, func(unv *Universe) *serviceA {
+			return &serviceA{
+				ref: serviceBLoc.Get(unv),
+			}
+		})
+
+		serviceBLoc.MustOverrideFunc(unv, func(unv *Universe) *serviceB {
+			return &serviceB{
+				ref: serviceALoc.Get(unv),
+			}
+		})
+
+		assert.PanicsWithValue(t, "svloc: circular dependency detected", func() {
+			serviceALoc.Get(unv)
 		})
 	})
 }

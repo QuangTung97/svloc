@@ -11,10 +11,20 @@ import (
 // Universe every universe is different
 // each newFn in a Locator[T] will be called once for each Universe
 // but different Universes can have different values of object created by values
-// the order of calls should be:
-//   Register in global => Wrap / Override / MustOverride => Get
+// The order of calls MUST be:
+//
+//	Register in global => Wrap / Override / MustOverride => Get
+//
 // It will return errors or panic (with Must* functions) if Get happens before any of those functions
 type Universe struct {
+	data       *universeData
+	currentKey any
+	prev       *Universe // linked list of Universe
+}
+
+// universeData is the real global structure
+// Universe just a local context object
+type universeData struct {
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
 }
@@ -22,38 +32,60 @@ type Universe struct {
 // NewUniverse creates a new Universe
 func NewUniverse() *Universe {
 	return &Universe{
-		svcMap: map[any]*registeredService{},
+		data: &universeData{
+			svcMap: map[any]*registeredService{},
+		},
+		currentKey: nil,
+		prev:       nil,
 	}
 }
 
 type registeredService struct {
-	onceDone atomic.Bool // similar to sync.Once but using TryLock of Mutex
-	mut      sync.Mutex
-	svc      any
+	key any
 
-	newFunc  func() any
-	wrappers []func(svc any) any
-
+	// ==========================================
+	onceDone        atomic.Bool // similar to sync.Once, but add a mechanism for detecting deadlock
+	onceMut         sync.Mutex
+	svc             any
 	getCallLocation string
+	// ==========================================
+
+	// ================================================
+	funcMut  sync.Mutex
+	newFunc  func(unv *Universe) any
+	wrappers []func(svc any) any
+	// ================================================
 }
 
-func (s *registeredService) newService(callLoc string) any {
+func (s *registeredService) newService(unv *Universe, callLoc string) any {
 	if s.onceDone.Load() {
 		return s.svc
 	}
-	return s.newServiceSlow(callLoc)
+	return s.newServiceSlow(unv, callLoc)
 }
 
-func (s *registeredService) newServiceSlow(callLoc string) any {
-	s.mut.Lock()
-	defer s.mut.Unlock()
+func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
+	for {
+		ok := s.onceMut.TryLock()
+		if ok {
+			break
+		}
+		if unv.detectCircularDependency(s.key) {
+			panic("svloc: circular dependency detected")
+		}
+	}
+	defer s.onceMut.Unlock()
 
 	// double-checked locking
 	if s.onceDone.Load() {
 		return s.svc
 	}
 
-	s.svc = s.newFunc()
+	s.svc = s.newFunc(&Universe{
+		data:       unv.data,
+		currentKey: s.key,
+		prev:       unv,
+	})
 	for _, wrapper := range s.wrappers {
 		s.svc = wrapper(s.svc)
 	}
@@ -65,7 +97,16 @@ func (s *registeredService) newServiceSlow(callLoc string) any {
 	return s.svc
 }
 
-func (u *Universe) getService(key any) *registeredService {
+func (u *Universe) detectCircularDependency(newKey any) bool {
+	for currentUnv := u; currentUnv != nil; currentUnv = currentUnv.prev {
+		if currentUnv.currentKey == newKey {
+			return true
+		}
+	}
+	return false
+}
+
+func (u *universeData) getService(key any) *registeredService {
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
@@ -74,8 +115,11 @@ func (u *Universe) getService(key any) *registeredService {
 		return svc
 	}
 
-	svc = &registeredService{}
+	svc = &registeredService{
+		key: key,
+	}
 	u.svcMap[key] = svc
+
 	return svc
 }
 
@@ -87,20 +131,20 @@ type Locator[T any] struct {
 
 // Get ...
 func (s *Locator[T]) Get(unv *Universe) T {
-	registered := unv.getService(s.key)
+	reg := unv.data.getService(s.key)
 
-	registered.mut.Lock()
-	if registered.newFunc == nil {
-		registered.newFunc = func() any {
+	reg.funcMut.Lock()
+	if reg.newFunc == nil {
+		reg.newFunc = func(unv *Universe) any {
 			return s.newFn(unv)
 		}
 	}
-	registered.mut.Unlock()
+	reg.funcMut.Unlock()
 
 	_, file, line, _ := runtime.Caller(1)
 	loc := fmt.Sprintf("%s:%d", file, line)
 
-	svc := registered.newService(loc)
+	svc := reg.newService(unv, loc)
 	return svc.(T)
 }
 
@@ -112,13 +156,13 @@ func (s *Locator[T]) Override(unv *Universe, svc T) error {
 }
 
 func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredService)) error {
-	reg := unv.getService(s.key)
+	reg := unv.data.getService(s.key)
 
-	reg.mut.Lock()
-	defer reg.mut.Unlock()
+	reg.funcMut.Lock()
+	defer reg.funcMut.Unlock()
 
 	if reg.onceDone.Load() {
-		fmt.Printf("Get called location: %s\n", reg.getCallLocation)
+		fmt.Printf("[ERROR] Get called location: %s\n", reg.getCallLocation)
 		return ErrGetAlreadyCalled
 	}
 
@@ -130,7 +174,7 @@ func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredServ
 // OverrideFunc ...
 func (s *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) error {
 	return s.doBeforeGet(unv, func(reg *registeredService) {
-		reg.newFunc = func() any {
+		reg.newFunc = func(unv *Universe) any {
 			return newFn(unv)
 		}
 	})
@@ -182,8 +226,13 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 	}
 }
 
+var notAllowRegistering atomic.Bool
+
 // Register creates a new Locator allow to call Get to create a new object
 func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
+	if notAllowRegistering.Load() {
+		panic("Not allow Register being called after PreventRegistering")
+	}
 	key := new(T)
 	return &Locator[T]{
 		key:   key,
@@ -201,9 +250,13 @@ func RegisterSimple[T any]() *Locator[T] {
 
 // RegisterEmpty does not init anything when calling Get, and must be Override
 func RegisterEmpty[T any]() *Locator[T] {
-	key := new(T)
+	if notAllowRegistering.Load() {
+		panic("Not allow Register being called after PreventRegistering")
+	}
 
+	key := new(T)
 	var val *T
+
 	return &Locator[T]{
 		key: key,
 		newFn: func(unv *Universe) T {
@@ -215,4 +268,9 @@ func RegisterEmpty[T any]() *Locator[T] {
 			)
 		},
 	}
+}
+
+// PreventRegistering prevents Register* functions being called after main() is started
+func PreventRegistering() {
+	notAllowRegistering.Store(true)
 }
