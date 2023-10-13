@@ -154,7 +154,7 @@ func (u *universeData) getService(key any, originalNewFunc func(unv *Universe) a
 	return svc
 }
 
-// Locator ...
+// Locator is a Thread-Safe object and can be called in multiple goroutines
 type Locator[T any] struct {
 	key   *T
 	newFn func(unv *Universe) any

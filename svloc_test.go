@@ -524,3 +524,30 @@ func TestLocator_Register_Complex__Success(t *testing.T) {
 
 	assert.NotSame(t, initRepoUnv, initSvcUnv)
 }
+
+func getAndOverrideInParallel(t *testing.T) {
+	resetGlobals()
+
+	unv := NewUniverse()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		userRepoLoc.Get(unv)
+	}()
+
+	go func() {
+		defer wg.Done()
+		_ = userRepoLoc.Override(unv, &RepoMock{})
+	}()
+
+	wg.Wait()
+}
+
+func TestLocator_Get_And_Override_In_Parallel(t *testing.T) {
+	for i := 0; i < 10_000; i++ {
+		getAndOverrideInParallel(t)
+	}
+}
