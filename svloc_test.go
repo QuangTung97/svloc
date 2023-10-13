@@ -338,9 +338,27 @@ type serviceB struct {
 	ref *serviceA
 }
 
+type complexServiceA struct {
+	ref *complexServiceB
+}
+
+type complexServiceB struct {
+	ref *complexServiceC
+}
+
+type complexServiceC struct {
+	ref *complexServiceA
+}
+
 var serviceALoc = RegisterEmpty[*serviceA]()
 
 var serviceBLoc = RegisterEmpty[*serviceB]()
+
+var complexServiceALoc = RegisterEmpty[*complexServiceA]()
+
+var complexServiceBLoc = RegisterEmpty[*complexServiceB]()
+
+var complexServiceCLoc = RegisterEmpty[*complexServiceC]()
 
 func TestLocator_Detect_Circular_Dependency(t *testing.T) {
 	t.Run("two services", func(t *testing.T) {
@@ -360,6 +378,32 @@ func TestLocator_Detect_Circular_Dependency(t *testing.T) {
 
 		assert.PanicsWithValue(t, "svloc: circular dependency detected", func() {
 			serviceALoc.Get(unv)
+		})
+	})
+
+	t.Run("complex", func(t *testing.T) {
+		unv := NewUniverse()
+
+		complexServiceALoc.MustOverrideFunc(unv, func(unv *Universe) *complexServiceA {
+			return &complexServiceA{
+				ref: complexServiceBLoc.Get(unv),
+			}
+		})
+
+		complexServiceBLoc.MustOverrideFunc(unv, func(unv *Universe) *complexServiceB {
+			return &complexServiceB{
+				ref: complexServiceCLoc.Get(unv),
+			}
+		})
+
+		complexServiceCLoc.MustOverrideFunc(unv, func(unv *Universe) *complexServiceC {
+			return &complexServiceC{
+				ref: complexServiceALoc.Get(unv),
+			}
+		})
+
+		assert.PanicsWithValue(t, "svloc: circular dependency detected", func() {
+			complexServiceCLoc.Get(unv)
 		})
 	})
 }
@@ -414,4 +458,69 @@ func TestPreventRegistering(t *testing.T) {
 			},
 		)
 	})
+}
+
+type productRepo struct {
+}
+
+type terminalRepo struct {
+}
+
+type productService struct {
+	repo     *productRepo
+	terminal *terminalRepo
+}
+
+type productHandler struct {
+	svc *productService
+}
+
+func TestLocator_Register_Complex__Success(t *testing.T) {
+	initRepoCalls := 0
+	var initRepoUnv *Universe
+	repoLoc := Register[*productRepo](func(unv *Universe) *productRepo {
+		initRepoCalls++
+		initRepoUnv = unv
+		return &productRepo{}
+	})
+
+	initTerminalCalls := 0
+	terminalRepoLoc := Register[*terminalRepo](func(unv *Universe) *terminalRepo {
+		initTerminalCalls++
+		return &terminalRepo{}
+	})
+
+	initSvcCalls := 0
+	var initSvcUnv *Universe
+	svcLoc := Register[*productService](func(unv *Universe) *productService {
+		initSvcCalls++
+		initSvcUnv = unv
+		return &productService{
+			repo:     repoLoc.Get(unv),
+			terminal: terminalRepoLoc.Get(unv),
+		}
+	})
+
+	initHandlerCalls := 0
+	handlerLoc := Register[*productHandler](func(unv *Universe) *productHandler {
+		initHandlerCalls++
+		return &productHandler{
+			svc: svcLoc.Get(unv),
+		}
+	})
+
+	unv := NewUniverse()
+
+	assert.Same(t, svcLoc.Get(unv), svcLoc.Get(unv))
+	assert.Same(t, handlerLoc.Get(unv), handlerLoc.Get(unv))
+
+	h := handlerLoc.Get(unv)
+	assert.Same(t, h.svc.repo, repoLoc.Get(unv))
+
+	assert.Equal(t, 1, initHandlerCalls)
+	assert.Equal(t, 1, initSvcCalls)
+	assert.Equal(t, 1, initTerminalCalls)
+	assert.Equal(t, 1, initRepoCalls)
+
+	assert.NotSame(t, initRepoUnv, initSvcUnv)
 }
