@@ -9,6 +9,9 @@ import (
 // Universe every universe is different
 // each newFn in a Locator[T] will be called once for each Universe
 // but different Universes can have different values of object created by values
+// the order of calls should be:
+//   Register in global => Wrap / Override / MustOverride => Get
+// it will return false or panic (with Must* functions) if not working
 type Universe struct {
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
@@ -22,8 +25,9 @@ func NewUniverse() *Universe {
 }
 
 type registeredService struct {
-	once sync.Once
-	svc  any
+	called bool
+	once   sync.Once
+	svc    any
 }
 
 func (u *Universe) getService(key any) *registeredService {
@@ -52,21 +56,28 @@ func (s *Locator[T]) Get(unv *Universe) T {
 
 	registered.once.Do(func() {
 		registered.svc = s.newFn(unv)
+		// registered.called = true
 	})
 
 	return registered.svc.(T)
 }
 
-// Override prevent running the function inside Register
-func (s *Locator[T]) Override(unv *Universe, svc T) (succeeded bool) {
+// Override prevents running the function inside Register
+func (s *Locator[T]) Override(unv *Universe, svc T) error {
 	registered := unv.getService(s.key)
 
+	var succeeded = false
 	registered.once.Do(func() {
 		succeeded = true
 		registered.svc = svc
+		// registered.called = true
 	})
 
-	return succeeded
+	if !succeeded {
+		return ErrGetAlreadyCalled
+
+	}
+	return nil
 }
 
 // MustOverride will fail if Override returns false
@@ -74,10 +85,19 @@ func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
 	var val *T
 	svcType := reflect.TypeOf(val).Elem()
 
-	ok := s.Override(unv, svc)
-	if !ok {
-		panic(fmt.Sprintf("Can NOT override service of type: '%v'", svcType))
+	err := s.Override(unv, svc)
+	if err != nil {
+		panic(fmt.Sprintf("Can NOT override service of type: '%v', err: %v", svcType, err))
 	}
+}
+
+// Wrap the original implementation with the object created by wrapper
+func (s *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
+	return nil
+}
+
+// MustWrap similar to Wrap, but it will panic if not succeeded
+func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) T) {
 }
 
 // Register creates a new Locator allow to call Get to create a new object

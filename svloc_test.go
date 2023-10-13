@@ -127,8 +127,8 @@ func TestSimpleServiceLocator_With_Override(t *testing.T) {
 		resetGlobals()
 
 		unv := NewUniverse()
-		ok := userRepoLoc.Override(unv, &RepoMock{})
-		assert.Equal(t, true, ok)
+		err := userRepoLoc.Override(unv, &RepoMock{})
+		assert.Equal(t, nil, err)
 
 		svc := userServiceLoc.Get(unv)
 		assert.Equal(t, "hello: mock", svc.Hello())
@@ -142,8 +142,8 @@ func TestSimpleServiceLocator_With_Override(t *testing.T) {
 		unv := NewUniverse()
 		userServiceLoc.Get(unv)
 
-		ok := userRepoLoc.Override(unv, &RepoMock{})
-		assert.Equal(t, false, ok)
+		err := userRepoLoc.Override(unv, &RepoMock{})
+		assert.Equal(t, ErrGetAlreadyCalled, err)
 	})
 }
 
@@ -167,9 +167,12 @@ func TestSimpleServiceLocator_With_Must_Override(t *testing.T) {
 		unv := NewUniverse()
 		userServiceLoc.Get(unv)
 
-		assert.PanicsWithValue(t, "Can NOT override service of type: 'svloc.Repo'", func() {
-			userRepoLoc.MustOverride(unv, &RepoMock{})
-		})
+		assert.PanicsWithValue(t,
+			"Can NOT override service of type: 'svloc.Repo', err: method Get already called",
+			func() {
+				userRepoLoc.MustOverride(unv, &RepoMock{})
+			},
+		)
 	})
 }
 
