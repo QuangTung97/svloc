@@ -3,7 +3,9 @@ package svloc
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // Universe every universe is different
@@ -25,9 +27,42 @@ func NewUniverse() *Universe {
 }
 
 type registeredService struct {
-	called bool
-	once   sync.Once
-	svc    any
+	onceDone atomic.Bool // similar to sync.Once but using TryLock of Mutex
+	mut      sync.Mutex
+	svc      any
+
+	newFunc  func() any
+	wrappers []func(svc any) any
+
+	getCallLocation string
+}
+
+func (s *registeredService) newService(callLoc string) any {
+	if s.onceDone.Load() {
+		return s.svc
+	}
+	return s.newServiceSlow(callLoc)
+}
+
+func (s *registeredService) newServiceSlow(callLoc string) any {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	// double-checked locking
+	if s.onceDone.Load() {
+		return s.svc
+	}
+
+	s.svc = s.newFunc()
+	for _, wrapper := range s.wrappers {
+		s.svc = wrapper(s.svc)
+	}
+
+	s.getCallLocation = callLoc
+
+	s.onceDone.Store(true)
+
+	return s.svc
 }
 
 func (u *Universe) getService(key any) *registeredService {
@@ -54,50 +89,97 @@ type Locator[T any] struct {
 func (s *Locator[T]) Get(unv *Universe) T {
 	registered := unv.getService(s.key)
 
-	registered.once.Do(func() {
-		registered.svc = s.newFn(unv)
-		// registered.called = true
-	})
+	registered.mut.Lock()
+	if registered.newFunc == nil {
+		registered.newFunc = func() any {
+			return s.newFn(unv)
+		}
+	}
+	registered.mut.Unlock()
 
-	return registered.svc.(T)
+	_, file, line, _ := runtime.Caller(1)
+	loc := fmt.Sprintf("%s:%d", file, line)
+
+	svc := registered.newService(loc)
+	return svc.(T)
 }
 
 // Override prevents running the function inside Register
 func (s *Locator[T]) Override(unv *Universe, svc T) error {
-	registered := unv.getService(s.key)
-
-	var succeeded = false
-	registered.once.Do(func() {
-		succeeded = true
-		registered.svc = svc
-		// registered.called = true
+	return s.OverrideFunc(unv, func(unv *Universe) T {
+		return svc
 	})
+}
 
-	if !succeeded {
+func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredService)) error {
+	reg := unv.getService(s.key)
+
+	reg.mut.Lock()
+	defer reg.mut.Unlock()
+
+	if reg.onceDone.Load() {
+		fmt.Printf("Get called location: %s\n", reg.getCallLocation)
 		return ErrGetAlreadyCalled
-
 	}
+
+	handler(reg)
+
 	return nil
+}
+
+// OverrideFunc ...
+func (s *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) error {
+	return s.doBeforeGet(unv, func(reg *registeredService) {
+		reg.newFunc = func() any {
+			return newFn(unv)
+		}
+	})
+}
+
+func (s *Locator[T]) panicOverrideError(err error) {
+	var val *T
+	svcType := reflect.TypeOf(val).Elem()
+
+	panic(fmt.Sprintf("Can NOT override service of type '%v', err: %v", svcType, err))
 }
 
 // MustOverride will fail if Override returns false
 func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
-	var val *T
-	svcType := reflect.TypeOf(val).Elem()
-
 	err := s.Override(unv, svc)
 	if err != nil {
-		panic(fmt.Sprintf("Can NOT override service of type: '%v', err: %v", svcType, err))
+		s.panicOverrideError(err)
+	}
+}
+
+func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T) {
+	err := s.OverrideFunc(unv, newFn)
+	if err != nil {
+		s.panicOverrideError(err)
 	}
 }
 
 // Wrap the original implementation with the object created by wrapper
 func (s *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
-	return nil
+	return s.doBeforeGet(unv, func(reg *registeredService) {
+		reg.wrappers = append(reg.wrappers, func(svc any) any {
+			return wrapper(unv, svc.(T))
+		})
+	})
 }
 
 // MustWrap similar to Wrap, but it will panic if not succeeded
 func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) T) {
+	err := s.Wrap(unv, wrapper)
+	if err != nil {
+		var val *T
+
+		str := fmt.Sprintf(
+			"Failed to Wrap '%v', error: %v",
+			reflect.TypeOf(val).Elem(),
+			err,
+		)
+		panic(str)
+	}
 }
 
 // Register creates a new Locator allow to call Get to create a new object

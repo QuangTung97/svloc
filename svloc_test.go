@@ -168,9 +168,47 @@ func TestSimpleServiceLocator_With_Must_Override(t *testing.T) {
 		userServiceLoc.Get(unv)
 
 		assert.PanicsWithValue(t,
-			"Can NOT override service of type: 'svloc.Repo', err: method Get already called",
+			"Can NOT override service of type 'svloc.Repo', err: method Get already called",
 			func() {
 				userRepoLoc.MustOverride(unv, &RepoMock{})
+			},
+		)
+	})
+
+	t.Run("func success", func(t *testing.T) {
+		resetGlobals()
+
+		unv := NewUniverse()
+
+		funcCalls := 0
+
+		userRepoLoc.MustOverrideFunc(unv, func(unv *Universe) Repo {
+			funcCalls++
+			return &RepoMock{}
+		})
+
+		assert.Equal(t, 0, funcCalls)
+
+		svc := userServiceLoc.Get(unv)
+		assert.Equal(t, "hello: mock", svc.Hello())
+
+		assert.Equal(t, 1, funcCalls)
+	})
+
+	t.Run("func failed", func(t *testing.T) {
+		resetGlobals()
+
+		unv := NewUniverse()
+
+		userServiceLoc.Get(unv)
+
+		assert.PanicsWithValue(
+			t,
+			"Can NOT override service of type 'svloc.Repo', err: method Get already called",
+			func() {
+				userRepoLoc.MustOverrideFunc(unv, func(unv *Universe) Repo {
+					return &RepoMock{}
+				})
 			},
 		)
 	})
@@ -224,11 +262,61 @@ func TestRegisterEmpty(t *testing.T) {
 		resetGlobals()
 
 		unv := NewUniverse()
-		databaseLoc.Override(unv, &Database{})
+		err := databaseLoc.Override(unv, &Database{})
+		assert.Equal(t, nil, err)
 
 		r := productRepoLoc.Get(unv)
 		r.Insert()
 
 		assert.Equal(t, 1, saveCalls)
+	})
+}
+
+type WrapperRepo struct {
+	repo   Repo
+	prefix string
+}
+
+func (r *WrapperRepo) GetUser() string {
+	return r.prefix + ": " + r.repo.GetUser()
+}
+
+func TestLocator_Wrap(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		unv := NewUniverse()
+
+		err := userRepoLoc.Wrap(unv, func(unv *Universe, repo Repo) Repo {
+			return &WrapperRepo{repo: repo, prefix: "wrapped"}
+		})
+		assert.Equal(t, nil, err)
+
+		svc := userServiceLoc.Get(unv)
+		assert.Equal(t, "hello: wrapped: user_repo", svc.Hello())
+	})
+
+	t.Run("multi wrappers", func(t *testing.T) {
+		unv := NewUniverse()
+
+		userRepoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
+			return &WrapperRepo{repo: repo, prefix: "wrapper01"}
+		})
+		userRepoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
+			return &WrapperRepo{repo: repo, prefix: "wrapper02"}
+		})
+
+		svc := userServiceLoc.Get(unv)
+		assert.Equal(t, "hello: wrapper02: wrapper01: user_repo", svc.Hello())
+	})
+
+	t.Run("failed wrap after get", func(t *testing.T) {
+		unv := NewUniverse()
+
+		userServiceLoc.Get(unv)
+
+		assert.PanicsWithValue(t, "Failed to Wrap 'svloc.Repo', error: method Get already called", func() {
+			userRepoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
+				return &WrapperRepo{repo: repo, prefix: "wrapper"}
+			})
+		})
 	})
 }
