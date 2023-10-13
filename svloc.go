@@ -168,7 +168,12 @@ func (s *Locator[T]) Get(unv *Universe) T {
 	loc := fmt.Sprintf("%s:%d", file, line)
 
 	svc := reg.newService(unv, loc)
-	return svc.(T)
+	result, ok := svc.(T)
+	if !ok {
+		var empty T
+		return empty
+	}
+	return result
 }
 
 // Override prevents running the function inside Register
@@ -251,11 +256,15 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 
 var notAllowRegistering atomic.Bool
 
+func checkAllowRegistering() {
+	if notAllowRegistering.Load() {
+		panic("Not allow Register* function being called after PreventRegistering")
+	}
+}
+
 // Register creates a new Locator allow to call Get to create a new object
 func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
-	if notAllowRegistering.Load() {
-		panic("Not allow Register being called after PreventRegistering")
-	}
+	checkAllowRegistering()
 
 	key := new(T)
 	return &Locator[T]{
@@ -276,9 +285,7 @@ func RegisterSimple[T any]() *Locator[T] {
 
 // RegisterEmpty does not init anything when calling Get, and must be Override
 func RegisterEmpty[T any]() *Locator[T] {
-	if notAllowRegistering.Load() {
-		panic("Not allow Register being called after PreventRegistering")
-	}
+	checkAllowRegistering()
 
 	key := new(T)
 	var val *T

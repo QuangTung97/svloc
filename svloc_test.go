@@ -363,3 +363,55 @@ func TestLocator_Detect_Circular_Dependency(t *testing.T) {
 		})
 	})
 }
+
+var userRepoSimpleLoc = RegisterSimple[Repo]()
+
+var userRepoStructLoc = RegisterSimple[UserRepo]()
+
+func TestLocator_Register_Simple(t *testing.T) {
+	t.Run("interface", func(t *testing.T) {
+		unv := NewUniverse()
+		val := userRepoSimpleLoc.Get(unv)
+		assert.Equal(t, nil, val)
+	})
+
+	t.Run("struct", func(t *testing.T) {
+		unv := NewUniverse()
+		val := userRepoStructLoc.Get(unv)
+		assert.Equal(t, UserRepo{}, val)
+	})
+}
+
+func TestPreventRegistering(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		defer func() {
+			notAllowRegistering.Store(false)
+		}()
+
+		PreventRegistering()
+
+		assert.PanicsWithValue(t,
+			"Not allow Register* function being called after PreventRegistering",
+			func() {
+				Register[*UserService](func(unv *Universe) *UserService {
+					return &UserService{}
+				})
+			},
+		)
+	})
+
+	t.Run("register empty", func(t *testing.T) {
+		defer func() {
+			notAllowRegistering.Store(false)
+		}()
+
+		PreventRegistering()
+
+		assert.PanicsWithValue(t,
+			"Not allow Register* function being called after PreventRegistering",
+			func() {
+				RegisterEmpty[*UserService]()
+			},
+		)
+	})
+}
