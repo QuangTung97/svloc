@@ -1,4 +1,4 @@
-.PHONY: lint test test-race
+.PHONY: lint test test-race install-tools
 
 lint:
 	$(foreach f,$(shell go fmt ./...),@echo "Forgot to format file: ${f}"; exit 1;)
@@ -10,3 +10,6 @@ test:
 
 test-race:
 	go test -count=1 -race ./...
+
+install-tools:
+	go install github.com/mgechev/revive
