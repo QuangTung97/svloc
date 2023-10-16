@@ -204,6 +204,9 @@ func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredServ
 
 // OverrideFunc ...
 func (s *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) error {
+	if unv.prev != nil {
+		return errOverrideInsideNewFunctions
+	}
 	return s.doBeforeGet(unv, func(reg *registeredService) {
 		reg.newFunc = func(unv *Universe) any {
 			return newFn(unv)

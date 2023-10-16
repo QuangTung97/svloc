@@ -525,6 +525,24 @@ func TestLocator_Register_Complex__Success(t *testing.T) {
 	assert.NotSame(t, initRepoUnv, initSvcUnv)
 }
 
+func TestLocator_Override_Inside_NewFunc(t *testing.T) {
+	svcLoc := Register[*UserService](func(unv *Universe) *UserService {
+		userRepoLoc.MustOverride(unv, &RepoMock{})
+		return &UserService{}
+	})
+
+	unv := NewUniverse()
+
+	assert.PanicsWithValue(
+		t,
+		"Can NOT override service of type 'svloc.Repo', err: "+
+			"svloc: method Override must NOT be called inside new functions",
+		func() {
+			svcLoc.Get(unv)
+		},
+	)
+}
+
 func doGetAndOverrideInParallel(_ *testing.T) {
 	resetGlobals()
 
