@@ -569,3 +569,140 @@ func TestLocator_Get_And_Override_In_Parallel(t *testing.T) {
 		doGetAndOverrideInParallel(t)
 	}
 }
+
+//revive:disable-next-line:cognitive-complexity
+func TestLocator_Do_Shutdown(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		var shutdowns []string
+
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			unv.OnShutdown(func() {
+				shutdowns = append(shutdowns, "repo shutdown")
+			})
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.Get(unv)
+
+		unv.Shutdown()
+
+		assert.Equal(t, []string{"repo shutdown"}, shutdowns)
+	})
+
+	t.Run("call multiple times", func(t *testing.T) {
+		var shutdowns []string
+
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			unv.OnShutdown(func() {
+				shutdowns = append(shutdowns, "repo shutdown")
+			})
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.Get(unv)
+
+		unv.Shutdown()
+
+		unv.Shutdown()
+
+		assert.Equal(t, []string{"repo shutdown"}, shutdowns)
+	})
+
+	t.Run("panic when shutdown then get", func(t *testing.T) {
+		var shutdowns []string
+
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			unv.OnShutdown(func() {
+				shutdowns = append(shutdowns, "repo shutdown")
+			})
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+		unv.Shutdown()
+
+		assert.PanicsWithValue(t, "svloc: can NOT Get after Shutdown", func() {
+			repoLoc.Get(unv)
+		})
+	})
+
+	t.Run("on shutdown outside", func(t *testing.T) {
+		unv := NewUniverse()
+		assert.PanicsWithValue(t, "svloc: can NOT call OnShutdown outside new functions", func() {
+			unv.OnShutdown(func() {
+			})
+		})
+	})
+
+	t.Run("shutdown on multiple services", func(t *testing.T) {
+		var shutdowns []string
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			unv.OnShutdown(func() {
+				shutdowns = append(shutdowns, "user-repo")
+			})
+			return &UserRepo{}
+		})
+
+		svcLoc := Register[*UserService](func(unv *Universe) *UserService {
+			svc := &UserService{
+				repo: repoLoc.Get(unv),
+			}
+
+			unv.OnShutdown(func() {
+				shutdowns = append(shutdowns, "user-svc")
+			})
+
+			return svc
+		})
+
+		unv := NewUniverse()
+
+		svcLoc.Get(unv)
+
+		unv.Shutdown()
+
+		assert.Equal(t, []string{"user-svc", "user-repo"}, shutdowns)
+	})
+}
+
+func TestLocator_Do_Shutdown_Complex(t *testing.T) {
+	var shutdowns []string
+
+	aLoc := Register[*complexServiceA](func(unv *Universe) *complexServiceA {
+		unv.OnShutdown(func() {
+			shutdowns = append(shutdowns, "svc-a")
+		})
+		return &complexServiceA{}
+	})
+
+	bLoc := Register[*complexServiceA](func(unv *Universe) *complexServiceA {
+		unv.OnShutdown(func() {
+			shutdowns = append(shutdowns, "svc-b")
+		})
+		return &complexServiceA{}
+	})
+
+	cLoc := Register[*complexServiceA](func(unv *Universe) *complexServiceA {
+		unv.OnShutdown(func() {
+			shutdowns = append(shutdowns, "svc-c")
+		})
+
+		aLoc.Get(unv)
+		bLoc.Get(unv)
+
+		return &complexServiceA{}
+	})
+
+	unv := NewUniverse()
+
+	cLoc.Get(unv)
+	aLoc.Get(unv)
+
+	unv.Shutdown()
+
+	assert.Equal(t, []string{"svc-c", "svc-b", "svc-a"}, shutdowns)
+}
