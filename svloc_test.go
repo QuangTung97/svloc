@@ -813,4 +813,24 @@ func TestUniverse_CleanUp(t *testing.T) {
 		})
 		assert.Equal(t, errors.New("svloc: can NOT call 'Wrap' after 'CleanUp'"), err)
 	})
+
+	t.Run("success shutdown after clean up", func(t *testing.T) {
+		var shutdowns []string
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			unv.OnShutdown(func() {
+				shutdowns = append(shutdowns, "repo")
+			})
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.Get(unv)
+
+		unv.CleanUp()
+
+		unv.Shutdown()
+
+		assert.Equal(t, []string{"repo"}, shutdowns)
+	})
 }

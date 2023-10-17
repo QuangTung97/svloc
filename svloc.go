@@ -346,6 +346,7 @@ func (u *universeData) cloneShutdownFuncList() []func() {
 	funcList := make([]func(), len(u.shutdownFuncs))
 	copy(funcList, u.shutdownFuncs)
 
+	u.shutdownFuncs = nil
 	u.alreadyShutdown = true
 	return funcList
 }
