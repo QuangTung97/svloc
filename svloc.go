@@ -29,6 +29,8 @@ type universeData struct {
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
 
+	cleared bool
+
 	shutdownFuncs   []func() // list of shutdown funcs from earliest to latest
 	alreadyShutdown bool
 }
@@ -43,6 +45,18 @@ func NewUniverse() *Universe {
 		reg:  nil,
 		prev: nil,
 	}
+}
+
+// CleanUp removes the data for wiring services
+// after that, Get calls will panic
+func (u *Universe) CleanUp() {
+	u.data.mut.Lock()
+
+	u.data.svcMap = nil
+
+	defer u.data.mut.Unlock()
+
+	u.data.cleared = true
 }
 
 type registeredService struct {
@@ -159,13 +173,20 @@ func (u *Universe) detectedCircularDependency(newKey any, callLoc string) bool {
 	return false
 }
 
-func (u *universeData) getService(key any, originalNewFunc func(unv *Universe) any) *registeredService {
+func (u *universeData) getService(
+	key any, originalNewFunc func(unv *Universe) any,
+	methodName string,
+) (*registeredService, error) {
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
+	if u.cleared {
+		return nil, fmt.Errorf("svloc: can NOT call '%s' after 'CleanUp'", methodName)
+	}
+
 	svc, existed := u.svcMap[key]
 	if existed {
-		return svc
+		return svc, nil
 	}
 
 	svc = &registeredService{
@@ -174,19 +195,19 @@ func (u *universeData) getService(key any, originalNewFunc func(unv *Universe) a
 	}
 	u.svcMap[key] = svc
 
-	return svc
+	return svc, nil
 }
 
 func (u *universeData) appendShutdownFunc(fn func()) {
-	if fn == nil {
-		return
-	}
-
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
 	if u.alreadyShutdown {
-		panic("svloc: can NOT Get after Shutdown")
+		panic("svloc: can NOT call 'Get' after 'Shutdown'")
+	}
+
+	if fn == nil {
+		return
 	}
 	u.shutdownFuncs = append(u.shutdownFuncs, fn)
 }
@@ -199,7 +220,10 @@ type Locator[T any] struct {
 
 // Get ...
 func (s *Locator[T]) Get(unv *Universe) T {
-	reg := unv.data.getService(s.key, s.newFn)
+	reg, err := unv.data.getService(s.key, s.newFn, "Get")
+	if err != nil {
+		panic(err.Error())
+	}
 
 	_, file, line, _ := runtime.Caller(1)
 	loc := fmt.Sprintf("%s:%d", file, line)
@@ -220,8 +244,15 @@ func (s *Locator[T]) Override(unv *Universe, svc T) error {
 	})
 }
 
-func (s *Locator[T]) doBeforeGet(unv *Universe, handler func(reg *registeredService)) error {
-	reg := unv.data.getService(s.key, s.newFn)
+func (s *Locator[T]) doBeforeGet(
+	unv *Universe,
+	methodName string,
+	handler func(reg *registeredService),
+) error {
+	reg, err := unv.data.getService(s.key, s.newFn, methodName)
+	if err != nil {
+		return err
+	}
 
 	reg.mut.Lock()
 	defer reg.mut.Unlock()
@@ -241,7 +272,7 @@ func (s *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) er
 	if unv.prev != nil {
 		return errOverrideInsideNewFunctions
 	}
-	return s.doBeforeGet(unv, func(reg *registeredService) {
+	return s.doBeforeGet(unv, "Override", func(reg *registeredService) {
 		reg.newFunc = func(unv *Universe) any {
 			return newFn(unv)
 		}
@@ -273,7 +304,7 @@ func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T
 
 // Wrap the original implementation with the object created by wrapper
 func (s *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
-	return s.doBeforeGet(unv, func(reg *registeredService) {
+	return s.doBeforeGet(unv, "Wrap", func(reg *registeredService) {
 		reg.wrappers = append(reg.wrappers, func(unv *Universe, svc any) any {
 			return wrapper(unv, svc.(T))
 		})
@@ -287,7 +318,7 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 		var val *T
 
 		str := fmt.Sprintf(
-			"Failed to Wrap '%v', error: %v",
+			"Failed to Wrap '%v', err: %v",
 			reflect.TypeOf(val).Elem(),
 			err,
 		)

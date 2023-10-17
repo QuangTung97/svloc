@@ -1,6 +1,7 @@
 package svloc
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"unsafe"
@@ -321,7 +322,7 @@ func TestLocator_Wrap(t *testing.T) {
 		userServiceLoc.Get(unv)
 
 		assert.PanicsWithValue(
-			t, "Failed to Wrap 'svloc.Repo', error: svloc: method Get already called",
+			t, "Failed to Wrap 'svloc.Repo', err: svloc: method Get already called",
 			func() {
 				userRepoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
 					return &WrapperRepo{repo: repo, prefix: "wrapper"}
@@ -626,7 +627,7 @@ func TestLocator_Do_Shutdown(t *testing.T) {
 		unv := NewUniverse()
 		unv.Shutdown()
 
-		assert.PanicsWithValue(t, "svloc: can NOT Get after Shutdown", func() {
+		assert.PanicsWithValue(t, "svloc: can NOT call 'Get' after 'Shutdown'", func() {
 			repoLoc.Get(unv)
 		})
 	})
@@ -726,4 +727,90 @@ func TestLocator_Do_Shutdown_Complex(t *testing.T) {
 
 func TestSizeOfRegisteredService(t *testing.T) {
 	assert.Equal(t, 120, int(unsafe.Sizeof(registeredService{})))
+}
+
+func TestUniverse_CleanUp(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		rp := repoLoc.Get(unv)
+
+		unv.CleanUp()
+
+		assert.Nil(t, unv.data.svcMap)
+		assert.Equal(t, "user_repo", rp.GetUser())
+	})
+
+	t.Run("get after clean up", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.Get(unv)
+
+		unv.CleanUp()
+
+		assert.PanicsWithValue(t, "svloc: can NOT call 'Get' after 'CleanUp'", func() {
+			repoLoc.Get(unv)
+		})
+	})
+
+	t.Run("override after clean up", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		unv.CleanUp()
+
+		assert.PanicsWithValue(t,
+			"Can NOT override service of type 'svloc.Repo', "+
+				"err: svloc: can NOT call 'Override' after 'CleanUp'",
+			func() {
+				repoLoc.MustOverride(unv, &RepoMock{})
+			},
+		)
+	})
+
+	t.Run("wrap after clean up", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		unv.CleanUp()
+
+		assert.PanicsWithValue(t,
+			"Failed to Wrap 'svloc.Repo', "+
+				"err: svloc: can NOT call 'Wrap' after 'CleanUp'",
+			func() {
+				repoLoc.MustWrap(unv, func(unv *Universe, svc Repo) Repo {
+					return svc
+				})
+			},
+		)
+	})
+
+	t.Run("wrap after clean up, returns error", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		unv.CleanUp()
+
+		err := repoLoc.Wrap(unv, func(unv *Universe, svc Repo) Repo {
+			return svc
+		})
+		assert.Equal(t, errors.New("svloc: can NOT call 'Wrap' after 'CleanUp'"), err)
+	})
 }
