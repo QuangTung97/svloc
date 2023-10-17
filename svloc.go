@@ -48,7 +48,7 @@ func NewUniverse() *Universe {
 }
 
 // CleanUp removes the data for wiring services
-// after that, Get calls will panic
+// after that, all calls will panic, excepts for Shutdown
 func (u *Universe) CleanUp() {
 	u.data.mut.Lock()
 
@@ -74,8 +74,12 @@ type registeredService struct {
 	getCallLocation string
 	createUnv       *Universe
 
-	newFunc  func(unv *Universe) any
-	wrappers []func(unv *Universe, svc any) any
+	overrideCallLocation string
+
+	newFunc func(unv *Universe) any
+
+	wrappers    []func(unv *Universe, svc any) any
+	wrapperLocs []string
 
 	onShutdown func()
 }
@@ -216,17 +220,18 @@ func (u *universeData) appendShutdownFunc(fn func()) {
 type Locator[T any] struct {
 	key   *T
 	newFn func(unv *Universe) any
+
+	registerLoc string
 }
 
-// Get ...
+// Get can panic if Shutdown already called
 func (s *Locator[T]) Get(unv *Universe) T {
 	reg, err := unv.data.getService(s.key, s.newFn, "Get")
 	if err != nil {
 		panic(err.Error())
 	}
 
-	_, file, line, _ := runtime.Caller(1)
-	loc := fmt.Sprintf("%s:%d", file, line)
+	loc := getCallerLocation()
 
 	svc := reg.newService(unv, loc)
 	result, ok := svc.(T)
@@ -239,9 +244,9 @@ func (s *Locator[T]) Get(unv *Universe) T {
 
 // Override prevents running the function inside Register
 func (s *Locator[T]) Override(unv *Universe, svc T) error {
-	return s.OverrideFunc(unv, func(unv *Universe) T {
+	return s.overrideFuncWithLoc(unv, func(unv *Universe) T {
 		return svc
-	})
+	}, getCallerLocation())
 }
 
 func (s *Locator[T]) doBeforeGet(
@@ -269,10 +274,18 @@ func (s *Locator[T]) doBeforeGet(
 
 // OverrideFunc ...
 func (s *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) error {
+	return s.overrideFuncWithLoc(unv, newFn, getCallerLocation())
+}
+
+func (s *Locator[T]) overrideFuncWithLoc(
+	unv *Universe, newFn func(unv *Universe) T,
+	callLoc string,
+) error {
 	if unv.prev != nil {
 		return errOverrideInsideNewFunctions
 	}
 	return s.doBeforeGet(unv, "Override", func(reg *registeredService) {
+		reg.overrideCallLocation = callLoc
 		reg.newFunc = func(unv *Universe) any {
 			return newFn(unv)
 		}
@@ -288,7 +301,9 @@ func (s *Locator[T]) panicOverrideError(err error) {
 
 // MustOverride will fail if Override returns false
 func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
-	err := s.Override(unv, svc)
+	err := s.overrideFuncWithLoc(unv, func(unv *Universe) T {
+		return svc
+	}, getCallerLocation())
 	if err != nil {
 		s.panicOverrideError(err)
 	}
@@ -296,7 +311,7 @@ func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
 
 // MustOverrideFunc similar to OverrideFunc but panics if error returned
 func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T) {
-	err := s.OverrideFunc(unv, newFn)
+	err := s.overrideFuncWithLoc(unv, newFn, getCallerLocation())
 	if err != nil {
 		s.panicOverrideError(err)
 	}
@@ -304,16 +319,24 @@ func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T
 
 // Wrap the original implementation with the object created by wrapper
 func (s *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
+	return s.wrapWithLoc(unv, wrapper, getCallerLocation())
+}
+
+func (s *Locator[T]) wrapWithLoc(
+	unv *Universe, wrapper func(unv *Universe, svc T) T,
+	callLoc string,
+) (err error) {
 	return s.doBeforeGet(unv, "Wrap", func(reg *registeredService) {
 		reg.wrappers = append(reg.wrappers, func(unv *Universe, svc any) any {
 			return wrapper(unv, svc.(T))
 		})
+		reg.wrapperLocs = append(reg.wrapperLocs, callLoc)
 	})
 }
 
 // MustWrap similar to Wrap, but it will panic if not succeeded
 func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) T) {
-	err := s.Wrap(unv, wrapper)
+	err := s.wrapWithLoc(unv, wrapper, getCallerLocation())
 	if err != nil {
 		var val *T
 
@@ -324,6 +347,39 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 		)
 		panic(str)
 	}
+}
+
+// GetLastOverrideLocation returns the last location that Override* is called
+// if no Override* is called, returns the Register location
+func (s *Locator[T]) GetLastOverrideLocation(unv *Universe) (string, error) {
+	reg, err := unv.data.getService(s.key, s.newFn, "GetLastOverrideLocation")
+	if err != nil {
+		return "", err
+	}
+
+	reg.mut.Lock()
+	defer reg.mut.Unlock()
+
+	if reg.overrideCallLocation != "" {
+		return reg.overrideCallLocation, nil
+	}
+	return s.registerLoc, nil
+}
+
+// GetWrapLocations returns Wrap* call's locations
+func (s *Locator[T]) GetWrapLocations(unv *Universe) ([]string, error) {
+	reg, err := unv.data.getService(s.key, s.newFn, "GetWrapLocations")
+	if err != nil {
+		return nil, err
+	}
+
+	reg.mut.Lock()
+	defer reg.mut.Unlock()
+
+	locs := make([]string, len(reg.wrapperLocs))
+	copy(locs, reg.wrapperLocs)
+
+	return locs, nil
 }
 
 // OnShutdown must only be called inside 'new' functions
@@ -351,7 +407,7 @@ func (u *universeData) cloneShutdownFuncList() []func() {
 	return funcList
 }
 
-// Shutdown call each callback that registered by  OnShutdown
+// Shutdown call each callback that registered by OnShutdown
 // This function must only be called outside the 'new' functions
 // It will panic if called inside
 func (u *Universe) Shutdown() {
@@ -371,6 +427,11 @@ func checkAllowRegistering() {
 	}
 }
 
+func getCallerLocation() string {
+	_, file, line, _ := runtime.Caller(2)
+	return fmt.Sprintf("%s:%d", file, line)
+}
+
 // Register creates a new Locator allow to call Get to create a new object
 func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 	checkAllowRegistering()
@@ -381,15 +442,18 @@ func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 		newFn: func(unv *Universe) any {
 			return newFn(unv)
 		},
+		registerLoc: getCallerLocation(),
 	}
 }
 
 // RegisterSimple creates a new Locator with very simple newFn that returns the zero value
 func RegisterSimple[T any]() *Locator[T] {
-	return Register[T](func(unv *Universe) T {
+	s := Register[T](func(unv *Universe) T {
 		var empty T
 		return empty
 	})
+	s.registerLoc = getCallerLocation()
+	return s
 }
 
 // RegisterEmpty does not init anything when calling Get, and must be Override
@@ -410,6 +474,7 @@ func RegisterEmpty[T any]() *Locator[T] {
 				),
 			)
 		},
+		registerLoc: getCallerLocation(),
 	}
 }
 

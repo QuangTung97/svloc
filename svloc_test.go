@@ -726,7 +726,7 @@ func TestLocator_Do_Shutdown_Complex(t *testing.T) {
 }
 
 func TestSizeOfRegisteredService(t *testing.T) {
-	assert.Equal(t, 120, int(unsafe.Sizeof(registeredService{})))
+	assert.Equal(t, 160, int(unsafe.Sizeof(registeredService{})))
 }
 
 func TestUniverse_CleanUp(t *testing.T) {
@@ -832,5 +832,131 @@ func TestUniverse_CleanUp(t *testing.T) {
 		unv.Shutdown()
 
 		assert.Equal(t, []string{"repo"}, shutdowns)
+	})
+}
+
+func TestLocator_GetLastOverrideLocation(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		loc, err := repoLoc.GetLastOverrideLocation(unv)
+		assert.Equal(t, nil, err)
+
+		expect := "svloc_test.go:840"
+		assert.Equal(t, expect, loc[len(loc)-len(expect):])
+	})
+
+	t.Run("after override", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.MustOverride(unv, &RepoMock{})
+
+		loc, err := repoLoc.GetLastOverrideLocation(unv)
+		assert.Equal(t, nil, err)
+
+		expect := "svloc_test.go:860"
+		assert.Equal(t, expect, loc[len(loc)-len(expect):])
+	})
+
+	t.Run("after override func", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		err := repoLoc.OverrideFunc(unv, func(unv *Universe) Repo {
+			return &RepoMock{}
+		})
+		assert.Equal(t, nil, err)
+
+		loc, err := repoLoc.GetLastOverrideLocation(unv)
+		assert.Equal(t, nil, err)
+
+		expect := "svloc_test.go:876"
+		assert.Equal(t, expect, loc[len(loc)-len(expect):])
+	})
+
+	t.Run("after clean up", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		unv.CleanUp()
+
+		loc, err := repoLoc.GetLastOverrideLocation(unv)
+		assert.Equal(t, errors.New("svloc: can NOT call 'GetLastOverrideLocation' after 'CleanUp'"), err)
+		assert.Equal(t, "", loc)
+	})
+}
+
+func TestLocator_GetWrapLocations(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		locs, err := repoLoc.GetWrapLocations(unv)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, 0, len(locs))
+	})
+
+	t.Run("multiple", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
+			return &WrapperRepo{
+				repo:   repo,
+				prefix: "prefix01",
+			}
+		})
+
+		repoLoc.MustWrap(unv, func(unv *Universe, repo Repo) Repo {
+			return &WrapperRepo{
+				repo:   repo,
+				prefix: "prefix02",
+			}
+		})
+
+		locs, err := repoLoc.GetWrapLocations(unv)
+		assert.Equal(t, nil, err)
+
+		assert.Equal(t, 2, len(locs))
+
+		expect := "svloc_test.go:923"
+		assert.Equal(t, expect, locs[0][len(locs[0])-len(expect):])
+
+		expect = "svloc_test.go:930"
+		assert.Equal(t, expect, locs[1][len(locs[1])-len(expect):])
+	})
+
+	t.Run("fail after clean up", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		unv.CleanUp()
+
+		locs, err := repoLoc.GetWrapLocations(unv)
+		assert.Equal(t, errors.New("svloc: can NOT call 'GetWrapLocations' after 'CleanUp'"), err)
+		assert.Equal(t, 0, len(locs))
 	})
 }
