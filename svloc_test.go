@@ -3,6 +3,7 @@ package svloc
 import (
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -667,6 +668,22 @@ func TestLocator_Do_Shutdown(t *testing.T) {
 
 		assert.Equal(t, []string{"user-svc", "user-repo"}, shutdowns)
 	})
+
+	t.Run("shutdown without callbacks", func(t *testing.T) {
+		var shutdowns []string
+
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		unv := NewUniverse()
+
+		repoLoc.Get(unv)
+
+		unv.Shutdown()
+
+		assert.Equal(t, []string(nil), shutdowns)
+	})
 }
 
 func TestLocator_Do_Shutdown_Complex(t *testing.T) {
@@ -705,4 +722,8 @@ func TestLocator_Do_Shutdown_Complex(t *testing.T) {
 	unv.Shutdown()
 
 	assert.Equal(t, []string{"svc-c", "svc-b", "svc-a"}, shutdowns)
+}
+
+func TestSizeOfRegisteredService(t *testing.T) {
+	assert.Equal(t, 120, int(unsafe.Sizeof(registeredService{})))
 }

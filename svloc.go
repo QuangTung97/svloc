@@ -29,7 +29,7 @@ type universeData struct {
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
 
-	getCallList     []*registeredService // list of Get calls from earliest to latest
+	shutdownFuncs   []func() // list of shutdown funcs from earliest to latest
 	alreadyShutdown bool
 }
 
@@ -63,8 +63,7 @@ type registeredService struct {
 	newFunc  func(unv *Universe) any
 	wrappers []func(unv *Universe, svc any) any
 
-	alreadyShutdown bool
-	onShutdown      func()
+	onShutdown func()
 }
 
 func (s *registeredService) newService(unv *Universe, callLoc string) any {
@@ -74,7 +73,7 @@ func (s *registeredService) newService(unv *Universe, callLoc string) any {
 
 	svc := s.newServiceSlow(unv, callLoc)
 
-	unv.data.appendGetCall(s)
+	unv.data.appendShutdownFunc(s.onShutdown)
 
 	return svc
 }
@@ -122,21 +121,6 @@ func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
 	s.onceDone.Store(true)
 
 	return s.svc
-}
-
-func (s *registeredService) doShutdown() {
-	s.mut.Lock()
-	defer s.mut.Unlock()
-
-	if s.alreadyShutdown {
-		return
-	}
-
-	if s.onShutdown != nil {
-		s.onShutdown()
-	}
-
-	s.alreadyShutdown = true
 }
 
 func (u *Universe) printGetCallTrace(problem string, callLoc string) {
@@ -193,14 +177,18 @@ func (u *universeData) getService(key any, originalNewFunc func(unv *Universe) a
 	return svc
 }
 
-func (u *universeData) appendGetCall(s *registeredService) {
+func (u *universeData) appendShutdownFunc(fn func()) {
+	if fn == nil {
+		return
+	}
+
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
 	if u.alreadyShutdown {
 		panic("svloc: can NOT Get after Shutdown")
 	}
-	u.getCallList = append(u.getCallList, s)
+	u.shutdownFuncs = append(u.shutdownFuncs, fn)
 }
 
 // Locator is a Thread-Safe object and can be called in multiple goroutines
@@ -316,26 +304,30 @@ func (u *Universe) OnShutdown(fn func()) {
 	u.reg.onShutdown = fn
 }
 
-func (u *universeData) cloneRegList() []*registeredService {
+func (u *universeData) cloneShutdownFuncList() []func() {
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
-	regList := make([]*registeredService, len(u.getCallList))
-	copy(regList, u.getCallList)
+	if u.alreadyShutdown {
+		return nil
+	}
+
+	funcList := make([]func(), len(u.shutdownFuncs))
+	copy(funcList, u.shutdownFuncs)
 
 	u.alreadyShutdown = true
-	return regList
+	return funcList
 }
 
 // Shutdown call each callback that registered by  OnShutdown
 // This function must only be called outside the 'new' functions
 // It will panic if called inside
 func (u *Universe) Shutdown() {
-	regList := u.data.cloneRegList()
+	funcList := u.data.cloneShutdownFuncList()
 
-	for i := len(regList) - 1; i >= 0; i-- {
-		reg := regList[i]
-		reg.doShutdown()
+	for i := len(funcList) - 1; i >= 0; i-- {
+		fn := funcList[i]
+		fn()
 	}
 }
 
