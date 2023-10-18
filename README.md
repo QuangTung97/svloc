@@ -1,6 +1,4 @@
-# Service Locator Library for Dependency Injection in Go
-
-#### (Not actually the Service Locator pattern)
+# A Library for Dependency Injection in Go
 
 [![svloc](https://github.com/QuangTung97/svloc/actions/workflows/go.yml/badge.svg)](https://github.com/QuangTung97/svloc/actions/workflows/go.yml)
 [![Coverage Status](https://coveralls.io/repos/github/QuangTung97/svloc/badge.svg?branch=master)](https://coveralls.io/github/QuangTung97/svloc?branch=master)
@@ -8,8 +6,24 @@
 ## Why this library?
 
 * It is simpler than [uber/fx](https://github.com/uber-go/fx), yet still powerful
-* Static typing
+* Static typing & no use of reflection
 * Easy to use and easy to replace objects for unit testing / integration testing
+* Easy to read & navigate with IDEs
+* Safe to use in multiple goroutines
+
+#### This library is NOT actually using the Service Locator pattern
+
+### Limitations
+
+* Runtime wiring of objects
+* Deep stack calls
+* ``Override`` functions only works outside of ``new functions`` in ``Register``
+
+## Installtion
+
+```bash
+go get github.com/QuangTung97/svloc@v0.4.0
+```
 
 ## Examples
 
@@ -41,6 +55,10 @@ Assume ``Service`` with method ``Hello``:
 
 ```go
 package main
+
+import (
+	"fmt"
+)
 
 type Service struct {
 	rp Repo
@@ -79,7 +97,13 @@ var serviceLoc = svloc.Register[*Service](func(unv *svloc.Universe) *Service {
 })
 ```
 
-Add use in ``main()``, by first creates a new ``Universe``. 
+The 3 newly created objects: ``usernameLoc``, ``repoLoc``, ``serviceLoc``
+are all immutable objects and safe to use concurrently.
+
+The ``svloc.PreventRegistering`` will not allow ``Register`` functions to be called after that point.
+Usually at the start of the ``main()`` function.
+
+To use in ``main()``, first creates a new ``Universe``.
 Then call ``MustOverride()`` on ``usernameLoc`` to provide the username string.
 And then call the ``serviceLoc.Get()`` with that ``Universe``,
 All of the wiring will happen automatically:
@@ -156,6 +180,41 @@ func main() {
 	svloc.PreventRegistering()
 
 	unv := svloc.NewUniverse()
+	usernameLoc.MustOverride(unv, "user01")
+
+	svc := serviceLoc.Get(unv)
+	svc.Hello()
+}
+```
+
+Using ``OnShutdown`` and ``Shutdown``:
+
+```go
+package main
+
+var repoLoc = svloc.Register[Repo](func(unv *svloc.Universe) Repo {
+	unv.OnShutdown(func() {
+		fmt.Println("Shutdown Repo")
+	})
+
+	return NewRepo(
+		usernameLoc.Get(unv),
+	)
+})
+
+var serviceLoc = svloc.Register[*Service](func(unv *svloc.Universe) *Service {
+	unv.OnShutdown(func() {
+		fmt.Println("Shutdown Service")
+	})
+	return NewService(repoLoc.Get(unv))
+})
+
+func main() {
+	svloc.PreventRegistering()
+
+	unv := svloc.NewUniverse()
+	defer unv.Shutdown()
+
 	usernameLoc.MustOverride(unv, "user01")
 
 	svc := serviceLoc.Get(unv)
