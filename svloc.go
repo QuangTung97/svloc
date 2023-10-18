@@ -8,14 +8,16 @@ import (
 	"sync/atomic"
 )
 
-// Universe every universe is different
-// each newFn in a Locator[T] will be called once for each Universe
-// but different Universes can have different values of object created by values
+// Universe represents a global service registry.
+//
+// Each newFn in a Locator[T] will be called once for each Universe.
+// But different Universes can have different values of object created by *newFn* functions.
+//
 // The order of calls MUST be:
 //
-//	Register in global => Wrap / Override / MustOverride => Get
+//	Register* in global => PreventRegistering() => Wrap / Override / MustOverride => Get
 //
-// It will return errors or panic (with Must* functions) if Get happens before any of those functions
+// It will return errors or panic (with Must* functions) if Locator.Get happens before any of those functions
 type Universe struct {
 	data *universeData
 
@@ -24,6 +26,7 @@ type Universe struct {
 }
 
 // universeData is the real global structure
+//
 // Universe just a local context object
 type universeData struct {
 	mut    sync.Mutex
@@ -47,8 +50,9 @@ func NewUniverse() *Universe {
 	}
 }
 
-// CleanUp removes the data for wiring services
-// after that, all calls will panic, excepts for Shutdown
+// CleanUp removes the data for wiring services. Help reduce GC overhead.
+//
+// After called, all other calls will panic, excepts for Shutdown
 func (u *Universe) CleanUp() {
 	u.data.mut.Lock()
 
@@ -220,7 +224,7 @@ func (u *universeData) appendShutdownFunc(fn func()) {
 	u.shutdownFuncs = append(u.shutdownFuncs, fn)
 }
 
-// Locator is a Thread-Safe object and can be called in multiple goroutines
+// Locator is an immutable object and can be called in multiple goroutines
 type Locator[T any] struct {
 	key   *int
 	newFn func(unv *Universe) any
@@ -228,7 +232,8 @@ type Locator[T any] struct {
 	registerLoc string
 }
 
-// Get can panic if Shutdown already called
+// Get can be called multiple times but the newFn inside Register* will be called ONCE.
+// It can panic if Universe.Shutdown already called
 func (s *Locator[T]) Get(unv *Universe) T {
 	reg, err := unv.data.getService(s.key, s.newFn, "Get")
 	if err != nil {
@@ -246,7 +251,7 @@ func (s *Locator[T]) Get(unv *Universe) T {
 	return result
 }
 
-// Override prevents running the function inside Register
+// Override the value returned by Get, it also prevents running of the function inside Register
 func (s *Locator[T]) Override(unv *Universe, svc T) error {
 	return s.overrideFuncWithLoc(unv, func(unv *Universe) T {
 		return svc
@@ -303,7 +308,7 @@ func (s *Locator[T]) panicOverrideError(err error) {
 	panic(fmt.Sprintf("Can NOT override service of type '%v', err: %v", svcType, err))
 }
 
-// MustOverride will fail if Override returns false
+// MustOverride will panic if Override returns error
 func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
 	err := s.overrideFuncWithLoc(unv, func(unv *Universe) T {
 		return svc
@@ -353,8 +358,8 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 	}
 }
 
-// GetLastOverrideLocation returns the last location that Override* is called
-// if no Override* is called, returns the Register location
+// GetLastOverrideLocation returns the last location that Override* is called.
+// If no Override* functions is called, returns the Register location
 func (s *Locator[T]) GetLastOverrideLocation(unv *Universe) (string, error) {
 	reg, err := unv.data.getService(s.key, s.newFn, "GetLastOverrideLocation")
 	if err != nil {
@@ -386,7 +391,7 @@ func (s *Locator[T]) GetWrapLocations(unv *Universe) ([]string, error) {
 	return locs, nil
 }
 
-// OnShutdown must only be called inside 'new' functions
+// OnShutdown must only be called inside 'new' functions.
 // It will panic if called outside
 func (u *Universe) OnShutdown(fn func()) {
 	if u.prev == nil {
@@ -411,8 +416,8 @@ func (u *universeData) cloneShutdownFuncList() []func() {
 	return funcList
 }
 
-// Shutdown call each callback that registered by OnShutdown
-// This function must only be called outside the 'new' functions
+// Shutdown call each callback that registered by OnShutdown.
+// This function must only be called outside the 'new' functions.
 // It will panic if called inside
 func (u *Universe) Shutdown() {
 	funcList := u.data.cloneShutdownFuncList()
@@ -436,7 +441,7 @@ func getCallerLocation() string {
 	return fmt.Sprintf("%s:%d", file, line)
 }
 
-// Register creates a new Locator allow to call Get to create a new object
+// Register creates a new Locator allow to call Locator.Get to create a new object
 func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 	checkAllowRegistering()
 
