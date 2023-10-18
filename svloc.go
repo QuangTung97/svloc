@@ -141,8 +141,12 @@ func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
 	return s.svc
 }
 
-func (u *Universe) printGetCallTrace(problem string, callLoc string) {
+func printSeparateLine() {
 	fmt.Println("==========================================================")
+}
+
+func (u *Universe) printGetCallTrace(problem string, callLoc string) {
+	printSeparateLine()
 	fmt.Printf("%s:\n", problem)
 
 	if callLoc != "" {
@@ -157,7 +161,7 @@ func (u *Universe) printGetCallTrace(problem string, callLoc string) {
 		fmt.Println("\t" + reg.getCallLocation)
 	}
 
-	fmt.Println("==========================================================")
+	printSeparateLine()
 }
 
 func (u *Universe) detectedCircularDependency(newKey any, callLoc string) bool {
@@ -460,12 +464,16 @@ func RegisterSimple[T any]() *Locator[T] {
 func RegisterEmpty[T any]() *Locator[T] {
 	checkAllowRegistering()
 
+	callLoc := getCallerLocation()
+
 	key := new(int)
 	var val *T
 
 	return &Locator[T]{
 		key: key,
 		newFn: func(unv *Universe) any {
+			printSeparateLine()
+			fmt.Println("'RegisterEmpty' location:", callLoc)
 			unv.printGetCallTrace("Get call stacktrace", "")
 			panic(
 				fmt.Sprintf(
@@ -474,7 +482,7 @@ func RegisterEmpty[T any]() *Locator[T] {
 				),
 			)
 		},
-		registerLoc: getCallerLocation(),
+		registerLoc: callLoc,
 	}
 }
 
