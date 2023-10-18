@@ -218,7 +218,7 @@ func (u *universeData) appendShutdownFunc(fn func()) {
 
 // Locator is a Thread-Safe object and can be called in multiple goroutines
 type Locator[T any] struct {
-	key   *T
+	key   *int
 	newFn func(unv *Universe) any
 
 	registerLoc string
@@ -436,7 +436,7 @@ func getCallerLocation() string {
 func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 	checkAllowRegistering()
 
-	key := new(T)
+	key := new(int)
 	return &Locator[T]{
 		key: key,
 		newFn: func(unv *Universe) any {
@@ -460,7 +460,7 @@ func RegisterSimple[T any]() *Locator[T] {
 func RegisterEmpty[T any]() *Locator[T] {
 	checkAllowRegistering()
 
-	key := new(T)
+	key := new(int)
 	var val *T
 
 	return &Locator[T]{
