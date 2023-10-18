@@ -2,6 +2,7 @@ package svloc
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"runtime"
 	"sync"
@@ -29,6 +30,8 @@ type Universe struct {
 //
 // Universe just a local context object
 type universeData struct {
+	stackPrinted atomic.Bool
+
 	mut    sync.Mutex
 	svcMap map[any]*registeredService
 
@@ -113,12 +116,23 @@ func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
 		prev: unv,
 	}
 
-	s.svc = newFunc(newUnv)
-	s.createUnv = newUnv
+	defer func() {
+		if s.createUnv != nil {
+			return
+		}
+		if !newUnv.data.stackPrinted.Swap(true) {
+			newUnv.printGetCallTrace("Get calls stacktrace", "")
+		}
+	}()
+
+	newSvc := newFunc(newUnv)
 
 	for _, wrapper := range s.wrappers {
-		s.svc = wrapper(newUnv, s.svc)
+		newSvc = wrapper(newUnv, newSvc)
 	}
+
+	s.svc = newSvc
+	s.createUnv = newUnv
 }
 
 func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
@@ -146,15 +160,15 @@ func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
 }
 
 func printSeparateLine() {
-	fmt.Println("==========================================================")
+	_, _ = fmt.Fprintln(os.Stderr, "==========================================================")
 }
 
 func (u *Universe) printGetCallTrace(problem string, callLoc string) {
 	printSeparateLine()
-	fmt.Printf("%s:\n", problem)
+	_, _ = fmt.Fprintf(os.Stderr, "%s:\n", problem)
 
 	if callLoc != "" {
-		fmt.Println("\t" + callLoc)
+		_, _ = fmt.Fprintln(os.Stderr, "\t"+callLoc)
 	}
 
 	for current := u; current != nil; current = current.prev {
@@ -162,7 +176,7 @@ func (u *Universe) printGetCallTrace(problem string, callLoc string) {
 		if reg == nil {
 			break
 		}
-		fmt.Println("\t" + reg.getCallLocation)
+		_, _ = fmt.Fprintln(os.Stderr, "\t"+reg.getCallLocation)
 	}
 
 	printSeparateLine()
@@ -179,6 +193,7 @@ func (u *Universe) detectedCircularDependency(newKey any, callLoc string) bool {
 			continue
 		}
 
+		u.data.stackPrinted.Store(true)
 		u.printGetCallTrace("Get calls stacktrace that causes circular dependency", callLoc)
 		return true
 	}
@@ -478,8 +493,7 @@ func RegisterEmpty[T any]() *Locator[T] {
 		key: key,
 		newFn: func(unv *Universe) any {
 			printSeparateLine()
-			fmt.Println("'RegisterEmpty' location:", callLoc)
-			unv.printGetCallTrace("Get call stacktrace", "")
+			_, _ = fmt.Fprintln(os.Stderr, "'RegisterEmpty' location:", callLoc)
 			panic(
 				fmt.Sprintf(
 					"Not found registered object of type '%v'",
