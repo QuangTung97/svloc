@@ -91,10 +91,12 @@ type registeredService struct {
 	onShutdown func()
 }
 
-func (s *registeredService) newService(unv *Universe, callLoc string) any {
+func (s *registeredService) newService(unv *Universe) any {
 	if s.onceDone.Load() {
 		return s.svc
 	}
+
+	callLoc := getCallerLocationWithSkip(2)
 
 	svc := s.newServiceSlow(unv, callLoc)
 
@@ -255,9 +257,7 @@ func (s *Locator[T]) Get(unv *Universe) T {
 		panic(err.Error())
 	}
 
-	loc := getCallerLocation()
-
-	svc := reg.newService(unv, loc)
+	svc := reg.newService(unv)
 	result, ok := svc.(T)
 	if !ok {
 		var empty T
@@ -449,6 +449,11 @@ func checkAllowRegistering() {
 	if notAllowRegistering.Load() {
 		panic("Not allow Register* function being called after PreventRegistering")
 	}
+}
+
+func getCallerLocationWithSkip(skip int) string {
+	_, file, line, _ := runtime.Caller(skip + 1)
+	return fmt.Sprintf("%s:%d", file, line)
 }
 
 func getCallerLocation() string {
