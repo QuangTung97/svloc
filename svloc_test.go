@@ -3,6 +3,7 @@ package svloc
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
@@ -846,7 +847,7 @@ func TestLocator_GetLastOverrideLocation(t *testing.T) {
 		loc, err := repoLoc.GetLastOverrideLocation(unv)
 		assert.Equal(t, nil, err)
 
-		expect := "svloc_test.go:840"
+		expect := "svloc_test.go:841"
 		assert.Equal(t, expect, loc[len(loc)-len(expect):])
 	})
 
@@ -862,7 +863,7 @@ func TestLocator_GetLastOverrideLocation(t *testing.T) {
 		loc, err := repoLoc.GetLastOverrideLocation(unv)
 		assert.Equal(t, nil, err)
 
-		expect := "svloc_test.go:860"
+		expect := "svloc_test.go:861"
 		assert.Equal(t, expect, loc[len(loc)-len(expect):])
 	})
 
@@ -881,7 +882,7 @@ func TestLocator_GetLastOverrideLocation(t *testing.T) {
 		loc, err := repoLoc.GetLastOverrideLocation(unv)
 		assert.Equal(t, nil, err)
 
-		expect := "svloc_test.go:876"
+		expect := "svloc_test.go:877"
 		assert.Equal(t, expect, loc[len(loc)-len(expect):])
 	})
 
@@ -939,10 +940,10 @@ func TestLocator_GetWrapLocations(t *testing.T) {
 
 		assert.Equal(t, 2, len(locs))
 
-		expect := "svloc_test.go:923"
+		expect := "svloc_test.go:924"
 		assert.Equal(t, expect, locs[0][len(locs[0])-len(expect):])
 
-		expect = "svloc_test.go:930"
+		expect = "svloc_test.go:931"
 		assert.Equal(t, expect, locs[1][len(locs[1])-len(expect):])
 	})
 
@@ -959,4 +960,37 @@ func TestLocator_GetWrapLocations(t *testing.T) {
 		assert.Equal(t, errors.New("svloc: can NOT call 'GetWrapLocations' after 'CleanUp'"), err)
 		assert.Equal(t, 0, len(locs))
 	})
+}
+
+var userServicePtr unsafe.Pointer
+
+func BenchmarkLocator_Get(b *testing.B) {
+	repoLoc := Register[Repo](func(unv *Universe) Repo {
+		return &UserRepo{}
+	})
+
+	userLoc := Register[*UserService](func(unv *Universe) *UserService {
+		return NewService(repoLoc.Get(unv))
+	})
+
+	b.ResetTimer()
+
+	// 3700 ns/op
+	for n := 0; n < b.N; n++ {
+		unv := NewUniverse()
+		svc := userLoc.Get(unv)
+		atomic.StorePointer(&userServicePtr, unsafe.Pointer(svc))
+	}
+}
+
+var benchMutex sync.Mutex
+
+func BenchmarkLocator_Mutex_Lock_Unlock(b *testing.B) {
+	b.ResetTimer()
+
+	// 10.96 ns/op
+	for n := 0; n < b.N; n++ {
+		benchMutex.Lock()
+		benchMutex.Unlock()
+	}
 }
