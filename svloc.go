@@ -485,6 +485,10 @@ func (u *universeData) cloneShutdownFuncList() []func() {
 // This function must only be called outside the 'new' functions.
 // It will panic if called inside
 func (u *Universe) Shutdown() {
+	if u.prev != nil {
+		panic("svloc: can NOT call Shutdown inside new functions")
+	}
+
 	funcList := u.data.cloneShutdownFuncList()
 
 	for i := len(funcList) - 1; i >= 0; i-- {

@@ -1031,3 +1031,16 @@ func TestUniverse_getPrintLocations(t *testing.T) {
 func assertSuffixEqual(t *testing.T, suffix string, s string) {
 	assert.Equal(t, suffix, s[len(s)-len(suffix):])
 }
+
+func TestLocator_Do_Shutdown__Panics(t *testing.T) {
+	repoLoc := Register[Repo](func(unv *Universe) Repo {
+		unv.Shutdown()
+		return &UserRepo{}
+	})
+
+	unv := NewUniverse()
+
+	assert.PanicsWithValue(t, "svloc: can NOT call Shutdown inside new functions", func() {
+		repoLoc.Get(unv)
+	})
+}

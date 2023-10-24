@@ -22,7 +22,7 @@
 ## Installtion
 
 ```bash
-go get github.com/QuangTung97/svloc@v0.4.0
+go get github.com/QuangTung97/svloc@v0.5.0
 ```
 
 ## Examples
