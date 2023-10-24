@@ -37,6 +37,8 @@ type universeData struct {
 
 	cleared bool
 
+	regList []*registeredService
+
 	shutdownFuncs   []func() // list of shutdown funcs from earliest to latest
 	alreadyShutdown bool
 }
@@ -58,12 +60,41 @@ func NewUniverse() *Universe {
 // After called, all other calls will panic, excepts for Shutdown
 func (u *Universe) CleanUp() {
 	u.data.mut.Lock()
-
-	u.data.svcMap = nil
-
 	defer u.data.mut.Unlock()
 
+	u.data.svcMap = nil
+	u.data.regList = nil
 	u.data.cleared = true
+}
+
+type getLoc struct {
+	regType reflect.Type
+	loc     string
+}
+
+func (u *Universe) getPrintTypeLocations() []getLoc {
+	d := u.data
+
+	d.mut.Lock()
+	cloneList := make([]*registeredService, len(d.regList))
+	copy(cloneList, d.regList)
+	d.mut.Unlock()
+
+	result := make([]getLoc, 0, len(cloneList))
+	for _, e := range cloneList {
+		result = append(result, e.getLastOverrideLoc())
+	}
+	return result
+}
+
+// PrintAllUsedTypes prints all types that have been initialized
+func (u *Universe) PrintAllUsedTypes() {
+	locs := u.getPrintTypeLocations()
+	printSeparateLine()
+	for _, loc := range locs {
+		_, _ = fmt.Fprintf(os.Stderr, "%s %s\n", loc.regType.String(), loc.loc)
+	}
+	printSeparateLine()
 }
 
 type registeredService struct {
@@ -79,6 +110,8 @@ type registeredService struct {
 	createUnv       *Universe
 
 	overrideCallLocation string
+
+	regType reflect.Type
 
 	newFunc func(unv *Universe) any
 
@@ -97,11 +130,12 @@ func (s *registeredService) newService(unv *Universe) any {
 
 	svc := s.newServiceSlow(unv, callLoc)
 
-	unv.data.appendShutdownFunc(s.onShutdown)
+	unv.data.appendShutdownFunc(s)
 
 	return svc
 }
 
+// callNewFuncAndWrappers already locked
 func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
 	newFunc := s.loc.newFn
 	if s.newFunc != nil {
@@ -125,6 +159,7 @@ func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
 	}()
 
 	newSvc := newFunc(newUnv)
+	regType := reflect.TypeOf(newSvc)
 
 	for _, wrapper := range s.wrappers {
 		newSvc = wrapper(newUnv, newSvc)
@@ -132,6 +167,7 @@ func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
 
 	s.svc = newSvc
 	s.createUnv = newUnv
+	s.regType = regType
 }
 
 func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
@@ -225,7 +261,7 @@ func (u *universeData) getService(
 	return svc, nil
 }
 
-func (u *universeData) appendShutdownFunc(fn func()) {
+func (u *universeData) appendShutdownFunc(s *registeredService) {
 	u.mut.Lock()
 	defer u.mut.Unlock()
 
@@ -233,6 +269,9 @@ func (u *universeData) appendShutdownFunc(fn func()) {
 		panic("svloc: can NOT call 'Get' after 'Shutdown'")
 	}
 
+	u.regList = append(u.regList, s)
+
+	fn := s.onShutdown
 	if fn == nil {
 		return
 	}
@@ -252,8 +291,8 @@ type locatorData struct {
 
 // Get can be called multiple times but the newFn inside Register* will be called ONCE.
 // It can panic if Universe.Shutdown already called
-func (s *Locator[T]) Get(unv *Universe) T {
-	reg, err := unv.data.getService(&s.data, "Get")
+func (l *Locator[T]) Get(unv *Universe) T {
+	reg, err := unv.data.getService(&l.data, "Get")
 	if err != nil {
 		panic(err.Error())
 	}
@@ -268,18 +307,18 @@ func (s *Locator[T]) Get(unv *Universe) T {
 }
 
 // Override the value returned by Get, it also prevents running of the function inside Register
-func (s *Locator[T]) Override(unv *Universe, svc T) error {
-	return s.overrideFuncWithLoc(unv, func(unv *Universe) T {
+func (l *Locator[T]) Override(unv *Universe, svc T) error {
+	return l.overrideFuncWithLoc(unv, func(unv *Universe) T {
 		return svc
 	}, getCallerLocation())
 }
 
-func (s *Locator[T]) doBeforeGet(
+func (l *Locator[T]) doBeforeGet(
 	unv *Universe,
 	methodName string,
 	handler func(reg *registeredService),
 ) error {
-	reg, err := unv.data.getService(&s.data, methodName)
+	reg, err := unv.data.getService(&l.data, methodName)
 	if err != nil {
 		return err
 	}
@@ -298,18 +337,18 @@ func (s *Locator[T]) doBeforeGet(
 }
 
 // OverrideFunc ...
-func (s *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) error {
-	return s.overrideFuncWithLoc(unv, newFn, getCallerLocation())
+func (l *Locator[T]) OverrideFunc(unv *Universe, newFn func(unv *Universe) T) error {
+	return l.overrideFuncWithLoc(unv, newFn, getCallerLocation())
 }
 
-func (s *Locator[T]) overrideFuncWithLoc(
+func (l *Locator[T]) overrideFuncWithLoc(
 	unv *Universe, newFn func(unv *Universe) T,
 	callLoc string,
 ) error {
 	if unv.prev != nil {
 		return errOverrideInsideNewFunctions
 	}
-	return s.doBeforeGet(unv, "Override", func(reg *registeredService) {
+	return l.doBeforeGet(unv, "Override", func(reg *registeredService) {
 		reg.overrideCallLocation = callLoc
 		reg.newFunc = func(unv *Universe) any {
 			return newFn(unv)
@@ -317,7 +356,7 @@ func (s *Locator[T]) overrideFuncWithLoc(
 	})
 }
 
-func (s *Locator[T]) panicOverrideError(err error) {
+func (l *Locator[T]) panicOverrideError(err error) {
 	var val *T
 	svcType := reflect.TypeOf(val).Elem()
 
@@ -325,33 +364,33 @@ func (s *Locator[T]) panicOverrideError(err error) {
 }
 
 // MustOverride will panic if Override returns error
-func (s *Locator[T]) MustOverride(unv *Universe, svc T) {
-	err := s.overrideFuncWithLoc(unv, func(unv *Universe) T {
+func (l *Locator[T]) MustOverride(unv *Universe, svc T) {
+	err := l.overrideFuncWithLoc(unv, func(unv *Universe) T {
 		return svc
 	}, getCallerLocation())
 	if err != nil {
-		s.panicOverrideError(err)
+		l.panicOverrideError(err)
 	}
 }
 
 // MustOverrideFunc similar to OverrideFunc but panics if error returned
-func (s *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T) {
-	err := s.overrideFuncWithLoc(unv, newFn, getCallerLocation())
+func (l *Locator[T]) MustOverrideFunc(unv *Universe, newFn func(unv *Universe) T) {
+	err := l.overrideFuncWithLoc(unv, newFn, getCallerLocation())
 	if err != nil {
-		s.panicOverrideError(err)
+		l.panicOverrideError(err)
 	}
 }
 
 // Wrap the original implementation with the object created by wrapper
-func (s *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
-	return s.wrapWithLoc(unv, wrapper, getCallerLocation())
+func (l *Locator[T]) Wrap(unv *Universe, wrapper func(unv *Universe, svc T) T) (err error) {
+	return l.wrapWithLoc(unv, wrapper, getCallerLocation())
 }
 
-func (s *Locator[T]) wrapWithLoc(
+func (l *Locator[T]) wrapWithLoc(
 	unv *Universe, wrapper func(unv *Universe, svc T) T,
 	callLoc string,
 ) (err error) {
-	return s.doBeforeGet(unv, "Wrap", func(reg *registeredService) {
+	return l.doBeforeGet(unv, "Wrap", func(reg *registeredService) {
 		reg.wrappers = append(reg.wrappers, func(unv *Universe, svc any) any {
 			return wrapper(unv, svc.(T))
 		})
@@ -360,8 +399,8 @@ func (s *Locator[T]) wrapWithLoc(
 }
 
 // MustWrap similar to Wrap, but it will panic if not succeeded
-func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) T) {
-	err := s.wrapWithLoc(unv, wrapper, getCallerLocation())
+func (l *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) T) {
+	err := l.wrapWithLoc(unv, wrapper, getCallerLocation())
 	if err != nil {
 		var val *T
 
@@ -376,24 +415,34 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 
 // GetLastOverrideLocation returns the last location that Override* is called.
 // If no Override* functions is called, returns the Register location
-func (s *Locator[T]) GetLastOverrideLocation(unv *Universe) (string, error) {
-	reg, err := unv.data.getService(&s.data, "GetLastOverrideLocation")
+func (l *Locator[T]) GetLastOverrideLocation(unv *Universe) (string, error) {
+	reg, err := unv.data.getService(&l.data, "GetLastOverrideLocation")
 	if err != nil {
 		return "", err
 	}
+	return reg.getLastOverrideLoc().loc, nil
+}
 
-	reg.mut.Lock()
-	defer reg.mut.Unlock()
+func (s *registeredService) getLastOverrideLoc() getLoc {
+	s.mut.Lock()
+	defer s.mut.Unlock()
 
-	if reg.overrideCallLocation != "" {
-		return reg.overrideCallLocation, nil
+	if s.overrideCallLocation != "" {
+		return getLoc{
+			regType: s.regType,
+			loc:     s.overrideCallLocation,
+		}
 	}
-	return s.data.registerLoc, nil
+
+	return getLoc{
+		regType: s.regType,
+		loc:     s.loc.registerLoc,
+	}
 }
 
 // GetWrapLocations returns Wrap* call's locations
-func (s *Locator[T]) GetWrapLocations(unv *Universe) ([]string, error) {
-	reg, err := unv.data.getService(&s.data, "GetWrapLocations")
+func (l *Locator[T]) GetWrapLocations(unv *Universe) ([]string, error) {
+	reg, err := unv.data.getService(&l.data, "GetWrapLocations")
 	if err != nil {
 		return nil, err
 	}

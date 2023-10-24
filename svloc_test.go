@@ -2,6 +2,7 @@ package svloc
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -727,7 +728,7 @@ func TestLocator_Do_Shutdown_Complex(t *testing.T) {
 }
 
 func TestSizeOfRegisteredService(t *testing.T) {
-	assert.Equal(t, 144, int(unsafe.Sizeof(registeredService{})))
+	assert.Equal(t, 160, int(unsafe.Sizeof(registeredService{})))
 }
 
 func TestUniverse_CleanUp(t *testing.T) {
@@ -847,8 +848,8 @@ func TestLocator_GetLastOverrideLocation(t *testing.T) {
 		loc, err := repoLoc.GetLastOverrideLocation(unv)
 		assert.Equal(t, nil, err)
 
-		expect := "svloc_test.go:841"
-		assert.Equal(t, expect, loc[len(loc)-len(expect):])
+		expect := "svloc_test.go:842"
+		assertSuffixEqual(t, expect, loc)
 	})
 
 	t.Run("after override", func(t *testing.T) {
@@ -863,8 +864,8 @@ func TestLocator_GetLastOverrideLocation(t *testing.T) {
 		loc, err := repoLoc.GetLastOverrideLocation(unv)
 		assert.Equal(t, nil, err)
 
-		expect := "svloc_test.go:861"
-		assert.Equal(t, expect, loc[len(loc)-len(expect):])
+		expect := "svloc_test.go:862"
+		assertSuffixEqual(t, expect, loc)
 	})
 
 	t.Run("after override func", func(t *testing.T) {
@@ -882,8 +883,8 @@ func TestLocator_GetLastOverrideLocation(t *testing.T) {
 		loc, err := repoLoc.GetLastOverrideLocation(unv)
 		assert.Equal(t, nil, err)
 
-		expect := "svloc_test.go:877"
-		assert.Equal(t, expect, loc[len(loc)-len(expect):])
+		expect := "svloc_test.go:878"
+		assertSuffixEqual(t, expect, loc)
 	})
 
 	t.Run("after clean up", func(t *testing.T) {
@@ -940,11 +941,11 @@ func TestLocator_GetWrapLocations(t *testing.T) {
 
 		assert.Equal(t, 2, len(locs))
 
-		expect := "svloc_test.go:924"
-		assert.Equal(t, expect, locs[0][len(locs[0])-len(expect):])
+		expect := "svloc_test.go:925"
+		assertSuffixEqual(t, expect, locs[0])
 
-		expect = "svloc_test.go:931"
-		assert.Equal(t, expect, locs[1][len(locs[1])-len(expect):])
+		expect = "svloc_test.go:932"
+		assertSuffixEqual(t, expect, locs[1])
 	})
 
 	t.Run("fail after clean up", func(t *testing.T) {
@@ -993,4 +994,40 @@ func BenchmarkLocator_Mutex_Lock_Unlock(b *testing.B) {
 		benchMutex.Lock()
 		benchMutex.Unlock()
 	}
+}
+
+func TestUniverse_getPrintLocations(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		repoLoc := Register[Repo](func(unv *Universe) Repo {
+			return &UserRepo{}
+		})
+
+		svcLoc := Register[*UserService](func(unv *Universe) *UserService {
+			return NewService(repoLoc.Get(unv))
+		})
+
+		unv := NewUniverse()
+
+		svc := svcLoc.Get(unv)
+
+		assert.Equal(t, "hello: user_repo", svc.Hello())
+
+		locs := unv.getPrintTypeLocations()
+		assert.Equal(t, 2, len(locs))
+
+		unv.PrintAllUsedTypes()
+
+		loc1 := "svloc_test.go:1001"
+		loc2 := "svloc_test.go:1005"
+
+		assertSuffixEqual(t, loc1, locs[0].loc)
+		assertSuffixEqual(t, loc2, locs[1].loc)
+
+		assert.Equal(t, reflect.TypeOf(&UserRepo{}), locs[0].regType)
+		assert.Equal(t, reflect.TypeOf(&UserService{}), locs[1].regType)
+	})
+}
+
+func assertSuffixEqual(t *testing.T, suffix string, s string) {
+	assert.Equal(t, suffix, s[len(s)-len(suffix):])
 }
