@@ -727,7 +727,7 @@ func TestLocator_Do_Shutdown_Complex(t *testing.T) {
 }
 
 func TestSizeOfRegisteredService(t *testing.T) {
-	assert.Equal(t, 160, int(unsafe.Sizeof(registeredService{})))
+	assert.Equal(t, 144, int(unsafe.Sizeof(registeredService{})))
 }
 
 func TestUniverse_CleanUp(t *testing.T) {

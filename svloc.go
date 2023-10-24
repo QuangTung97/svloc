@@ -67,11 +67,8 @@ func (u *Universe) CleanUp() {
 }
 
 type registeredService struct {
-	// ===========================================
 	// constant values
-	key             any
-	originalNewFunc func(unv *Universe) any
-	// ===========================================
+	loc *locatorData
 
 	mut sync.Mutex
 
@@ -106,7 +103,7 @@ func (s *registeredService) newService(unv *Universe) any {
 }
 
 func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
-	newFunc := s.originalNewFunc
+	newFunc := s.loc.newFn
 	if s.newFunc != nil {
 		newFunc = s.newFunc
 	}
@@ -140,7 +137,7 @@ func (s *registeredService) callNewFuncAndWrappers(unv *Universe) {
 func (s *registeredService) newServiceSlow(unv *Universe, callLoc string) any {
 	ok := s.mut.TryLock()
 	if !ok {
-		if unv.detectedCircularDependency(s.key, callLoc) {
+		if unv.detectedCircularDependency(s.loc.key, callLoc) {
 			panic("svloc: circular dependency detected")
 		}
 		s.mut.Lock()
@@ -191,7 +188,7 @@ func (u *Universe) detectedCircularDependency(newKey any, callLoc string) bool {
 			break
 		}
 
-		if reg.key != newKey {
+		if reg.loc.key != newKey {
 			continue
 		}
 
@@ -203,7 +200,7 @@ func (u *Universe) detectedCircularDependency(newKey any, callLoc string) bool {
 }
 
 func (u *universeData) getService(
-	key any, originalNewFunc func(unv *Universe) any,
+	locData *locatorData,
 	methodName string,
 ) (*registeredService, error) {
 	u.mut.Lock()
@@ -213,14 +210,15 @@ func (u *universeData) getService(
 		return nil, fmt.Errorf("svloc: can NOT call '%s' after 'CleanUp'", methodName)
 	}
 
+	key := locData.key
+
 	svc, existed := u.svcMap[key]
 	if existed {
 		return svc, nil
 	}
 
 	svc = &registeredService{
-		key:             key,
-		originalNewFunc: originalNewFunc,
+		loc: locData,
 	}
 	u.svcMap[key] = svc
 
@@ -243,16 +241,19 @@ func (u *universeData) appendShutdownFunc(fn func()) {
 
 // Locator is an immutable object and can be called in multiple goroutines
 type Locator[T any] struct {
-	key   *int
-	newFn func(unv *Universe) any
+	data locatorData
+}
 
+type locatorData struct {
+	key         *int
+	newFn       func(unv *Universe) any
 	registerLoc string
 }
 
 // Get can be called multiple times but the newFn inside Register* will be called ONCE.
 // It can panic if Universe.Shutdown already called
 func (s *Locator[T]) Get(unv *Universe) T {
-	reg, err := unv.data.getService(s.key, s.newFn, "Get")
+	reg, err := unv.data.getService(&s.data, "Get")
 	if err != nil {
 		panic(err.Error())
 	}
@@ -278,7 +279,7 @@ func (s *Locator[T]) doBeforeGet(
 	methodName string,
 	handler func(reg *registeredService),
 ) error {
-	reg, err := unv.data.getService(s.key, s.newFn, methodName)
+	reg, err := unv.data.getService(&s.data, methodName)
 	if err != nil {
 		return err
 	}
@@ -376,7 +377,7 @@ func (s *Locator[T]) MustWrap(unv *Universe, wrapper func(unv *Universe, svc T) 
 // GetLastOverrideLocation returns the last location that Override* is called.
 // If no Override* functions is called, returns the Register location
 func (s *Locator[T]) GetLastOverrideLocation(unv *Universe) (string, error) {
-	reg, err := unv.data.getService(s.key, s.newFn, "GetLastOverrideLocation")
+	reg, err := unv.data.getService(&s.data, "GetLastOverrideLocation")
 	if err != nil {
 		return "", err
 	}
@@ -387,12 +388,12 @@ func (s *Locator[T]) GetLastOverrideLocation(unv *Universe) (string, error) {
 	if reg.overrideCallLocation != "" {
 		return reg.overrideCallLocation, nil
 	}
-	return s.registerLoc, nil
+	return s.data.registerLoc, nil
 }
 
 // GetWrapLocations returns Wrap* call's locations
 func (s *Locator[T]) GetWrapLocations(unv *Universe) ([]string, error) {
-	reg, err := unv.data.getService(s.key, s.newFn, "GetWrapLocations")
+	reg, err := unv.data.getService(&s.data, "GetWrapLocations")
 	if err != nil {
 		return nil, err
 	}
@@ -467,11 +468,13 @@ func Register[T any](newFn func(unv *Universe) T) *Locator[T] {
 
 	key := new(int)
 	return &Locator[T]{
-		key: key,
-		newFn: func(unv *Universe) any {
-			return newFn(unv)
+		data: locatorData{
+			key: key,
+			newFn: func(unv *Universe) any {
+				return newFn(unv)
+			},
+			registerLoc: getCallerLocation(),
 		},
-		registerLoc: getCallerLocation(),
 	}
 }
 
@@ -481,7 +484,7 @@ func RegisterSimple[T any]() *Locator[T] {
 		var empty T
 		return empty
 	})
-	s.registerLoc = getCallerLocation()
+	s.data.registerLoc = getCallerLocation()
 	return s
 }
 
@@ -495,18 +498,20 @@ func RegisterEmpty[T any]() *Locator[T] {
 	var val *T
 
 	return &Locator[T]{
-		key: key,
-		newFn: func(unv *Universe) any {
-			printSeparateLine()
-			_, _ = fmt.Fprintln(os.Stderr, "'RegisterEmpty' location:", callLoc)
-			panic(
-				fmt.Sprintf(
-					"Not found registered object of type '%v'",
-					reflect.TypeOf(val).Elem(),
-				),
-			)
+		data: locatorData{
+			key: key,
+			newFn: func(unv *Universe) any {
+				printSeparateLine()
+				_, _ = fmt.Fprintln(os.Stderr, "'RegisterEmpty' location:", callLoc)
+				panic(
+					fmt.Sprintf(
+						"Not found registered object of type '%v'",
+						reflect.TypeOf(val).Elem(),
+					),
+				)
+			},
+			registerLoc: callLoc,
 		},
-		registerLoc: callLoc,
 	}
 }
 
