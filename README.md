@@ -6,19 +6,19 @@
 ## Why this library?
 
 * It is simpler than [uber/fx](https://github.com/uber-go/fx), yet still powerful
-* Static typing & no use of reflection
-* Easy to use and easy to replace objects for unit testing / integration testing
+* Static typing & without using reflection
+* Easy to use and easy to replace objects for unit & integration testing
 * Easy to read & navigate with IDEs
 * Safe to use in multiple goroutines
+* Very easy-to-read stacktraces when something wrong happens
 
-#### This library is NOT actually using the Service Locator pattern
+#### This library does NOT actually use the Service Locator pattern
 
 ### Limitations
 
 * Runtime wiring of objects
 * Deep stack calls
-* ``Override`` functions only works outside of ``new functions`` in ``Register``
-
+* ``Override`` functions only work outside of the ``anonymous functions`` in the ``Register`` calls
 ## Installtion
 
 ```bash
