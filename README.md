@@ -7,11 +7,11 @@
 
 * It is simpler than [uber/fx](https://github.com/uber-go/fx), yet still powerful
 * Static typing & without using reflection
-* Easy to use and easy to replace objects for unit & integration testing (by using **Override**)
+* Easy to use and easy to replace objects for unit & integration testing (by using **Override**, one can replace any part of the **default** dependency graph)
 * Easy to read & navigate with IDEs
 * Safe to use in multiple goroutines
 * Very easy-to-read stacktraces when something wrong happens
-* Provide default wiring through the **Register** method, or no default wiring through **RegisterEmpty**
+* Provide **default** wiring through the **Register** method, or no default wiring through **RegisterEmpty**
 
 #### This library does NOT actually use the Service Locator pattern
 
